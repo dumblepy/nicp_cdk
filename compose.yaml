@@ -1,6 +1,5 @@
 services:
   anvil:
-    image: local/anvil:ci
     build:
       context: .
       dockerfile: docker/anvil/develop.Dockerfile
@@ -15,7 +14,6 @@ services:
       start_period: 5s
 
   app:
-    image: local/app:ci
     build:
       context: .
       dockerfile: docker/app/develop.Dockerfile
