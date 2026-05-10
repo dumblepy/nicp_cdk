@@ -1,0 +1,13 @@
+service : {
+  "init" : () -> ();
+  "name" : () -> (text) query;
+  "symbol" : () -> (text) query;
+  "decimals" : () -> (nat) query;
+  "mint" : (nat) -> (bool);
+  "totalSupply" : () -> (nat) query;
+  "balanceOf" : (principal) -> (nat) query;
+  "transfer" : (principal, nat) -> (bool);
+  "approve" : (principal, nat) -> (bool);
+  "allowance" : (principal, principal) -> (nat) query;
+  "transferFrom" : (principal, principal, nat) -> (bool);
+};

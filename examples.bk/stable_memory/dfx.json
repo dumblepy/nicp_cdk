@@ -1,0 +1,45 @@
+{
+  "canisters": {
+    "internet_identity": {
+      "candid": "https://github.com/dfinity/internet-identity/releases/latest/download/internet_identity.did",
+      "frontend": {},
+      "remote": {
+        "id": {
+          "ic": "rdmx6-jaaaa-aaaaa-aaadq-cai"
+        }
+      },
+      "type": "custom",
+      "wasm": "https://github.com/dfinity/internet-identity/releases/latest/download/internet_identity_dev.wasm.gz"
+    },
+    "stable_memory_backend": {
+      "candid": "stable_memory.did",
+      "package": "stable_memory_backend",
+      "build": "bash -c 'if [ \"${DFX_NETWORK:-local}\" = \"local\" ]; then ndfx development_build; else ndfx production_build; fi'",
+      "main": "src/stable_memory_backend/main.nim",
+      "wasm": "main.wasm",
+      "type": "custom",
+      "metadata": [
+        {
+          "name": "candid:service"
+        }
+      ]
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    },
+    "replica": {
+      "subnet_type": "system"
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1,
+  "networks": {
+    "local": {
+      "bind": "127.0.0.1:4943",
+      "type": "ephemeral"
+    }
+  }
+}

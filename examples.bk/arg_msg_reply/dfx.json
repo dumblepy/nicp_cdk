@@ -1,0 +1,36 @@
+{
+  "canisters": {
+    "arg_msg_reply_backend": {
+      "candid": "arg_msg_reply.did",
+      "package": "arg_msg_reply_backend",
+      "build": "bash -c 'if [ \"${DFX_NETWORK:-local}\" = \"local\" ]; then ndfx development_build; else ndfx production_build; fi'",
+      "main": "src/arg_msg_reply_backend/main.nim",
+      "wasm": "main.wasm",
+      "type": "custom",
+      "metadata": [
+        {
+          "name": "candid:service"
+        }
+      ]
+    },
+    "internet_identity": {
+      "candid": "https://github.com/dfinity/internet-identity/releases/latest/download/internet_identity.did",
+      "frontend": {},
+      "remote": {
+        "id": {
+          "ic": "rdmx6-jaaaa-aaaaa-aaadq-cai"
+        }
+      },
+      "type": "custom",
+      "wasm": "https://github.com/dfinity/internet-identity/releases/latest/download/internet_identity_dev.wasm.gz"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

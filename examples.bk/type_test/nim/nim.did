@@ -1,0 +1,53 @@
+service : {
+  "boolFunc" : () -> (bool) query;
+  "intFunc" : () -> (int) query;
+  "int8Func" : () -> (int8) query;
+  "int16Func" : () -> (int16) query;
+  "int32Func" : () -> (int32) query;
+  "int64Func" : () -> (int64) query;
+  "natFunc" : () -> (nat) query;
+  "nat8Func" : () -> (nat8) query;
+  "nat16Func" : () -> (nat16) query;
+  "nat32Func" : () -> (nat32) query;
+  "nat64Func" : () -> (nat64) query;
+  "floatFunc" : () -> (float64) query;
+  "textFunc" : () -> (text) query;
+  "blobFunc" : () -> (blob) query;
+  "optTextSome" : () -> (opt text) query;
+  "optTextNone" : () -> (opt text) query;
+  "optIntSome" : () -> (opt int) query;
+  "optIntNone" : () -> (opt int) query;
+  "optNatSome" : () -> (opt nat) query;
+  "optNatNone" : () -> (opt nat) query;
+  "optFloatSome" : () -> (opt float64) query;
+  "optFloatNone" : () -> (opt float64) query;
+  "optBoolSome" : () -> (opt bool) query;
+  "optBoolNone" : () -> (opt bool) query;
+  "vecNatFunc" : () -> (vec nat) query;
+  "vecTextFunc" : () -> (vec text) query;
+  "vecBoolFunc" : () -> (vec bool) query;
+  "vecIntFunc" : () -> (vec int) query;
+  "vecVecNatFunc" : () -> (vec vec nat) query;
+  "vecVecTextFunc" : () -> (vec vec text) query;
+  "vecVecBoolFunc" : () -> (vec vec bool) query;
+  "vecVecIntFunc" : () -> (vec vec int) query;
+  "responseNull" : () -> (null) query;
+  "responseEmpty" : () -> () query;
+  "recordSimple" : () -> (record { name : text; age : int }) query;
+  "recordNested" : () -> (record { user : record { id : nat; active : bool }; meta : record { note : text } }) query;
+  "principalFunc" : () -> (principal) query;
+  "principalAnonymous" : () -> (principal) query;
+  "principalCanister" : () -> (principal) query;
+  // function reference returning: query () -> (text)
+  "funcRefTextQuery" : () -> (func () -> (text) query) query;
+  // variant: simple enum-like Color
+  "variantColorRed" : () -> (variant { Red; Green; Blue }) query;
+  "variantColorGreen" : () -> (variant { Red; Green; Blue }) query;
+  "variantColorBlue" : () -> (variant { Red; Green; Blue }) query;
+  // variant: Result with payload
+  "variantResultOk" : () -> (variant { success : text; error : text }) query;
+  "variantResultErr" : () -> (variant { success : text; error : text }) query;
+  // variant: Status mixed payloads
+  "variantStatusActive" : () -> (variant { active : record { id : nat }; inactive }) query;
+  "variantStatusInactive" : () -> (variant { active : record { id : nat }; inactive }) query;
+};

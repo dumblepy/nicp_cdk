@@ -1,0 +1,22 @@
+service : {
+  "getNewPublicKey" : () -> (text);
+  "getPublicKey" : () -> (text) query;
+  "signWithEcdsa" : (text) -> (text);
+  "verifyWithEcdsa": (
+    record{
+      message:text;
+      signature:text;
+      publicKey:text;
+    }
+  ) -> (bool);
+  "getEvmAddress": () -> (text) query;
+  "signWithEthereum": (mesage:text) -> (text);
+  "verifyWithEthereum": (
+    record{
+      message:text;
+      signature:text;
+      ethereumAddress:text;
+    }
+  ) -> (bool);
+  "signWithEvmWallet": (blob) -> (text);
+};

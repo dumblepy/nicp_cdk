@@ -23,5 +23,4 @@ services:
     volumes:
       - .:/application
     ports:
-      - 3000:3000 # frontend
-      - 4943:4943 # icp
+      - 8000:8000

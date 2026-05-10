@@ -11,6 +11,7 @@ alwaysApply: false
 - Nim canister の生成物は、`icp-cli` が作る公式テンプレート構造をベースにしつつ、Motoko backend を Nim backend に差し替える
 - `ndfx build` / `ndfx dev` が `icp-cli` の build script step から呼び出せるように、WASM出力先を `ICP_WASM_OUTPUT_PATH` へ渡せる設計にする
 - README、サンプル、テスト、CLIヘルプ内の `dfx` 前提記述を必要範囲で `icp` 前提へ更新する
+- `/application/examples.bk` 配下にある既存サンプルプロジェクトを、`nicp new` を入口として `/application/examples` 配下へ同名・同相対パスの `icp-cli` プロジェクトとして作り直す
 
 ## 進捗
 - [x] ブランチルール作成
@@ -32,9 +33,18 @@ alwaysApply: false
 - [x] 実装: `nicp build` が `backend.did` を Wasm の `candid:service` メタデータへ埋め込むよう変更
 - [x] テスト: `ndfx new <name>` で生成したプロジェクトに対し `icp project show` が通ることを確認
 - [x] テスト: 生成プロジェクトで `icp network start -d`、`icp deploy` が通ることを確認
+- [x] 設計: `examples.bk` 配下の dfx ベースサンプルを `examples` 配下の icp-cli ベースサンプルへ再生成する方針を確定
+- [x] 調査: `examples.bk` 内の各 dfx プロジェクトの canister 構成、Nim/Motoko/asset frontend の有無、README・テストスクリプトの移植対象を棚卸し
+- [x] 実装: `examples.bk` から `examples` の `icp-cli` 土台を再生成するスクリプトを追加
+- [x] 実装: backend-only サンプルの `icp.yaml` / `backend/canister.yaml` / `backend/src` / `*.nimble` を新構造へ移植
+- [ ] 実装: `examples.bk` の Motoko backend、README、テスト用スクリプト、必要な frontend 資産を新構造へ移植
+- [ ] 検証: 各生成プロジェクトで `icp project show` と `icp build` が通ることを確認
+- [ ] 検証: 代表サンプルで `icp network start -d`、`icp deploy`、主要 `icp canister call` が通ることを確認
 
 ## 参考資料
 - `src/cli/functions/new_impl.nim`
+- `/application/examples.bk`
+- `/application/examples`
 - `.cursor/rules/branch/50-fix-project-create-command.mdc`
 - ICP CLI Quickstart: https://cli.internetcomputer.org/0.2/quickstart/
 - ICP CLI CLI Reference: https://cli.internetcomputer.org/0.2/reference/cli/
@@ -136,3 +146,73 @@ alwaysApply: false
 - Nimble の `srcDir` は新構造に合わせて `backend/src` とする。現行の `src/{projectName}_backend` は `dfx new` 構造由来なので、`icp-cli` 構造へ寄せる場合は廃止候補。
 - `backend.did` は backend canister manifest と同じディレクトリに置く方が `icp-cli` 公式テンプレートに近い。現行の `{projectName}.did` ルート配置は廃止候補。
 - 実装時は `dfx.json` を生成・編集しない。JSON操作ではなく YAML 生成・編集が必要になるため、Nim 側で YAML ライブラリを追加するか、単純なテンプレート文字列で `icp.yaml` / `canister.yaml` を書き出す。初回は固定テンプレートで十分。
+- `examples.bk` の移植は、まず旧ディレクトリを維持したまま `examples/<sample>/backend/*` と `examples/<sample>/*.nimble` / `icp.yaml` を追加する段階的移行で進める。これにより旧 `dfx` ベースのテスト資産を壊さずに、`icp-cli` 側の新構造を並行して整備できる。
+- `examples.bk` からの再生成は、手作業のコピペではなく `scripts/rebuild_examples_icp.sh` を介して共通テンプレートを吐き出す方針にした。ここでは backend-only サンプルを先に移し、Motoko / frontend 系は次の段階で埋める。
+
+## examples.bk 再生成の実装方針・設計書
+
+### 目的
+- 既存の `/application/examples.bk` は `dfx.json`、`build.sh`、`src/{name}_backend` を前提にした旧構造のサンプル群である。
+- 新しい `/application/examples` は、`icp.yaml`、`backend/canister.yaml`、`backend/src`、`backend/backend.did` を前提にした `icp-cli` 構造へ統一する。
+- 生成の入口は `nicp new` とし、手作業で一からディレクトリを組むのではなく、現行 CLI が作る標準構造を土台にして各サンプル固有のコードだけを移植する。
+
+### 対象プロジェクト
+- `examples.bk` 直下またはその下位に `dfx.json` を持つディレクトリを「旧サンプルプロジェクト」とみなす。
+- 検出済みの対象は以下。
+  - `arg_msg_reply`
+  - `counter`
+  - `dfx_hello`
+  - `ecdsa_args`
+  - `erc20`
+  - `http_outcall/motoko`
+  - `http_outcall/nim`
+  - `stable_memory`
+  - `t_ecdsa`
+  - `type_test/motoko`
+  - `type_test/nim`
+- 出力先は原則として `/application/examples/{相対パス}` とする。たとえば `examples.bk/http_outcall/nim` は `examples/http_outcall/nim`、`examples.bk/type_test/motoko` は `examples/type_test/motoko` に作る。
+- すでに `/application/examples` 配下に対象ディレクトリがある場合は、実装前に差分を確認し、ユーザー作業の混入がないことを確認してから更新する。未追跡・手編集がある場合は上書きしない。
+
+### 生成コマンド方針
+- Nim backend を持つサンプルは、対象ディレクトリの親ディレクトリへ移動してから以下の形で生成する。
+  ```sh
+  nicp new {folder_name} none
+  ```
+- frontend canister が必要なサンプルは、`nicp new {folder_name}` で React frontend 付きの土台を生成する。ただし `erc20` の asset frontend や `t_ecdsa` の Preact/Vite frontend は、生成された React app をそのまま使わず、旧 frontend 資産を新しい `frontend/` 配下の `icp-cli` asset canister 構造へ合わせて移植する。
+- `dfx_hello`、`http_outcall/motoko`、`type_test/motoko` は Motoko 比較用サンプルであり、`nicp new` の Nim backend 土台とは言語が異なる。依頼の「`nicp new` を使う」を満たすため、初期ディレクトリ生成だけは `nicp new {folder_name} none` で行い、その後 `backend/src/main.nim` と Nim 用設定を削除して Motoko backend 用の `backend/src/main.mo` と `backend/canister.yaml` に差し替える。ただし、Motoko 専用テンプレートとしての純度を優先する場合は、この3件だけ `icp new` 生成へ切り替える余地を残す。
+
+### 移植ルール
+- `dfx.json` は移植しない。canister 定義は `icp.yaml` と各 canister の `canister.yaml` へ移す。
+- `build.sh` は移植しない。Nim backend は `backend/canister.yaml` の script step から `nicp build` を呼ぶ。
+- 旧 `src/{canister_name}/config.nims` は、原則として `nicp new` が生成する `backend/config.nims` を基準にし、サンプル固有の差分がある場合だけ反映する。
+- 旧 `src/{canister_name}/*.nim` は `backend/src/` へ移す。複数ファイル構成の `t_ecdsa` と `http_outcall/nim` は、import パスが `backend/src` 前提で解決できるように保つ。
+- 旧ルートの `{project}.did` または `nim.did` は `backend/backend.did` へ移す。canister 名を `backend` へ統一する場合は README と呼び出し例も `backend` に合わせる。
+- `internet_identity` は `dfx.json` の canister としては移植しない。必要なサンプルでは `icp-cli` の managed network 設定または frontend 側の認証設定として表現する。
+- `.dfx/`、`.nimcache/`、`node_modules/`、`dist/`、生成済み `.wasm`、旧 declarations は移植しない。
+- README、テストスクリプト、呼び出し例は `dfx` コマンドから `icp` コマンドへ置き換える。代表対応は既存の「コマンド対応の基本表」に従う。
+
+### canister 名の設計
+- `nicp new` 標準の canister 名は `backend` / `frontend` であるため、新サンプルでも原則としてこの名前に寄せる。
+- 旧名を残す必要がある frontend バインディングやテストがある場合のみ、`icp.yaml` と `canister.yaml` の `name` を旧 `dfx.json` の canister 名へ寄せる。ただし初回方針は `backend` / `frontend` 統一を優先する。
+- `t_ecdsa` のように frontend から backend canister 名を参照するサンプルでは、バインディング生成先と import 名を新しい canister 名へ合わせる。
+
+### サンプル別の方針
+- `arg_msg_reply`: `nicp new arg_msg_reply none` で backend-only 生成。`main.nim` と `arg_msg_reply.did` を `backend/` へ移植し、README の canister call を `icp canister call backend ...` へ更新する。
+- `counter`: backend-only。`counter.did` と `main.nim` を移植し、旧 `c_headers/` は生成物扱いとして移植しない。
+- `ecdsa_args`: backend-only。`internet_identity` は旧 dfx canister としては移植せず、必要性を README に明記する。
+- `stable_memory`: backend-only。upgrade テスト用スクリプトは `icp` コマンドへ書き換えて移植する。安定メモリ検証のため、deploy/upgrade の手順を README に残す。
+- `http_outcall/nim`: backend-only。`controller.nim` を含む複数ファイル構成を `backend/src/` に移植し、HTTP outcall に必要な cycles/permission 手順を README に残す。
+- `type_test/nim`: backend-only。`nim.did` と `main.nim` を移植し、型互換テストの実行導線を `type_test/run_compatibility_test.sh` 側で新パス対応にする。
+- `t_ecdsa`: frontend 付き。backend は Nim 複数ファイルを移植し、frontend は旧 `src/t_ecdsa_frontend` のソース、package、vite 設定、テストを `frontend/app` または `frontend/` の asset canister 構造へ移す。`node_modules`、`dist`、生成済み declarations は移植しない。
+- `erc20`: frontend 付き。backend は Nim を移植し、asset frontend は `frontend` canister として `assets/` を配置する。旧 `internet_identity` canister は移植しない。
+- `dfx_hello`: Motoko-only。`nicp new dfx_hello none` 生成後に Motoko backend へ差し替えるか、例外として `icp new` の Motoko テンプレートを使う。実装前にどちらで統一するか決める。
+- `http_outcall/motoko`: Motoko-only。`dfx_hello` と同じ扱い。`main.mo` と README を `icp-cli` 構造へ移す。
+- `type_test/motoko`: Motoko-only。Nim 版との比較対象として残す。`type_test/run_compatibility_test.sh` が両方の新パスを参照するようにする。
+
+### 検証方針
+- 全対象で `icp project show` を実行し、`icp.yaml` と canister manifest が解釈できることを確認する。
+- Nim backend は全対象で `icp build backend` を実行する。
+- Motoko-only サンプルは `icp build backend` が通るように `backend/canister.yaml` の recipe を調整する。
+- frontend 付きサンプルは `icp build frontend` を実行し、package install が必要な場合は lockfile を更新する。
+- 代表的な backend-only サンプルとして `counter`、複数ファイル Nim サンプルとして `t_ecdsa` または `http_outcall/nim`、upgrade 系として `stable_memory` を `icp deploy` まで確認する。
+- 実装作業では `git add` と `git commit` は行わない。
