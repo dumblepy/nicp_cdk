@@ -6,213 +6,193 @@ alwaysApply: false
 ===
 
 このブランチで実装することは以下の通りです。
-- `ndfx new` が内部で利用している `dfx new ...` を `icp new ...` に置き換える
-- 生成されるプロジェクト構造を `dfx.json` ベースから `icp-cli` の `icp.yaml` / `canister.yaml` ベースへ移行する
-- Nim canister の生成物は、`icp-cli` が作る公式テンプレート構造をベースにしつつ、Motoko backend を Nim backend に差し替える
-- `ndfx build` / `ndfx dev` が `icp-cli` の build script step から呼び出せるように、WASM出力先を `ICP_WASM_OUTPUT_PATH` へ渡せる設計にする
-- README、サンプル、テスト、CLIヘルプ内の `dfx` 前提記述を必要範囲で `icp` 前提へ更新する
-- `/application/examples.bk` 配下にある既存サンプルプロジェクトを、`nicp new` を入口として `/application/examples` 配下へ同名・同相対パスの `icp-cli` プロジェクトとして作り直す
+- ICP Management Canister が生成した secp256k1 ECDSA 署名を単体テストで検証するための暗号依存を、`nimcrypto` と `secp256k1` から `rustcrypto` (`itsumura-h/nim-rustcrypto`) へ置き換える。
+- `nimcrypto/keccak` で行っている Keccak-256 ハッシュ処理を `rustcrypto/algorithm/sha3` の Keccak-256 API へ移行する。
+- `secp256k1` で行っている鍵パース、圧縮公開鍵の展開、署名検証、recoverable signature による公開鍵復元を `rustcrypto/algorithm/secp256k1` と必要に応じて `rustcrypto/ethereum` へ移行する。
+- `nicp_cdk.nimble` から `nimcrypto` と `secp256k1` の依存を削除し、`rustcrypto` の GitHub subdir 依存を追加する。
+- 既存の公開API (`keccak256Hash`, `verifySignatureWithSecp256k1`, `icpPublicKeyToEvmAddress`, `convertIcpSignatureToEthereum` など) は、呼び出し側の変更を最小にするため原則維持する。
 
 ## 進捗
-- [x] ブランチルール作成
-- [x] 調査: 旧 `dfx new` ワンライナーと `icp new` ワンライナーの対応を整理
-- [x] 設計: `icp-cli` ベースの新規プロジェクト構造案を整理
-- [x] 調査: `icp-cli` 公式テンプレートで React 以外の frontend が今後提供されるか、実装時点の最新版で再確認
-- [x] 調査: `icp build -e local/ic` 実行時に build script へ環境名を渡す公式変数があるか確認し、dev/release 切替方法を確定
-- [x] 実装: `src/cli/functions/new_impl.nim` のプロジェクト生成コマンドを `icp new` に変更
-- [x] 実装: 生成後の backend 差し替え処理を `backend/` + `backend/canister.yaml` + `icp.yaml` 構造へ変更
-- [x] 実装: `ndfx build/dev` または新規補助コマンドが `ICP_WASM_OUTPUT_PATH` に最終WASMを配置できるようにする
-- [x] 実装: `.gitignore` を `.dfx/` から `.icp/cache/` 中心へ更新し、必要なら `.icp/data/.gitkeep` を保持
-- [x] 実装: README・examples・tests の `dfx` コマンド参照を `icp` コマンド参照へ段階的に更新
-- [x] 実装: `ndfx network` コマンドを追加し、`ndfx cHeaders` と `icp network start -d` の起動手順をCLI化
-- [x] 実装: `ndfx network` の `icp.yaml` 判定を実行ディレクトリ直下に変更し、`.icp` を実行ディレクトリ直下で削除するよう調整
-- [x] 実装: `ndfx network` 内の `ndfx cHeaders` 呼び出しを Nim の `cHeaders()` 直接呼び出しへ変更
-- [x] 実装: `icp network start -d` を逐次出力するよう `osproc` のストリーミング実行へ変更
-- [x] 実装: `examples/icp_hello/backend/canister.yaml` を Nim 自前ビルド向けの `build.steps` 形式へ修正
-- [x] 実装: `examples/icp_hello/backend/canister.yaml` に `candid:service` メタデータ埋め込みを追加
-- [x] 実装: `nicp build` が `backend.did` を Wasm の `candid:service` メタデータへ埋め込むよう変更
-- [x] テスト: `ndfx new <name>` で生成したプロジェクトに対し `icp project show` が通ることを確認
-- [x] テスト: 生成プロジェクトで `icp network start -d`、`icp deploy` が通ることを確認
-- [x] 設計: `examples.bk` 配下の dfx ベースサンプルを `examples` 配下の icp-cli ベースサンプルへ再生成する方針を確定
-- [x] 調査: `examples.bk` 内の各 dfx プロジェクトの canister 構成、Nim/Motoko/asset frontend の有無、README・テストスクリプトの移植対象を棚卸し
-- [x] 実装: `examples.bk` から `examples` の `icp-cli` 土台を再生成するスクリプトを追加
-- [x] 実装: backend-only サンプルの `icp.yaml` / `backend/canister.yaml` / `backend/src` / `*.nimble` を新構造へ移植
-- [ ] 実装: `examples.bk` の Motoko backend、README、テスト用スクリプト、必要な frontend 資産を新構造へ移植
-- [ ] 検証: 各生成プロジェクトで `icp project show` と `icp build` が通ることを確認
-- [ ] 検証: 代表サンプルで `icp network start -d`、`icp deploy`、主要 `icp canister call` が通ることを確認
+- [x] 既存のブランチルールとプロジェクトルールを確認
+- [x] 現在の依存箇所を調査
+- [x] `nim-rustcrypto` の README / secp256k1 / Keccak / Ethereum / FFI ドキュメントを確認
+- [x] 実装方針と設計をこのブランチルールへ記録
+- [x] `nicp_cdk.nimble` の暗号依存を `rustcrypto` に置換
+- [x] `src/nicp_cdk/algorithm/ecdsa.nim` を `rustcrypto` ベースへ移行
+- [x] `src/nicp_cdk/algorithm/ethereum.nim` を `rustcrypto` ベースへ移行
+- [x] `tests/test_sign_verify.nim` の直接依存を `rustcrypto` へ移行
+- [x] `tests/algorithm/test_eth_address.nim` の期待値とエラー系を移行後APIに合わせて確認
+- [x] `rg "nimcrypto|import secp256k1|requires \"secp256k1|requires \"nimcrypto"` で旧依存が残っていないことを確認
+- [x] `nimble test` または対象テストを実行して回帰確認
 
 ## 参考資料
-- `src/cli/functions/new_impl.nim`
-- `/application/examples.bk`
-- `/application/examples`
-- `.cursor/rules/branch/50-fix-project-create-command.mdc`
-- ICP CLI Quickstart: https://cli.internetcomputer.org/0.2/quickstart/
-- ICP CLI CLI Reference: https://cli.internetcomputer.org/0.2/reference/cli/
-- ICP CLI Project Model: https://cli.internetcomputer.org/0.2/concepts/project-model/
-- ICP CLI Configuration Reference: https://cli.internetcomputer.org/0.2/reference/configuration/
-- ICP CLI Environment Variables Reference: https://cli.internetcomputer.org/0.2/reference/environment-variables/
-- ICP CLI Migrating from dfx: https://cli.internetcomputer.org/0.2/migration/from-dfx/
-- icp-cli repository: https://github.com/dfinity/icp-cli
-- icp-cli templates repository: https://github.com/dfinity/icp-cli-templates
+- `nim-rustcrypto`: https://github.com/itsumura-h/nim-rustcrypto
+- `nim-rustcrypto` README: https://github.com/itsumura-h/nim-rustcrypto/blob/main/README.md
+- `nim-rustcrypto` secp256k1 ECDSA: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/secp256k1-ecdsa.md
+- `nim-rustcrypto` secp256k1 DER: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/secp256k1-ecdsa-der.md
+- `nim-rustcrypto` SHA3 / Keccak: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/sha3-keccak.md
+- `nim-rustcrypto` Ethereum helpers: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/ethereum.md
+- `nim-rustcrypto` low-level FFI: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/ffi-low-level.md
+- 既存依存定義: `nicp_cdk.nimble`
+- 既存ECDSA実装: `src/nicp_cdk/algorithm/ecdsa.nim`
+- 既存Ethereum実装: `src/nicp_cdk/algorithm/ethereum.nim`
+- 既存単体テスト: `tests/test_sign_verify.nim`, `tests/algorithm/test_eth_address.nim`
+- ECDSAサンプル利用箇所: `examples/t_ecdsa/src/t_ecdsa_backend/usecase.nim`
 
 ## 調査結果・設計まとめ
-- 現在の `ndfx new` は `src/cli/functions/new_impl.nim` で以下の形のワンライナーを組み立てている。
-  ```sh
-  dfx new {projectName} --type motoko --frontend {framework} {--extras ...}
-  ```
-- `icp-cli` での基本置換は、公式移行表では `dfx new my_project` → `icp new my_project`。ただし、`icp new` は `cargo-generate` ベースのテンプレート生成コマンドであり、`dfx new` の `--type` / `--frontend` / `--extras` と同じフラグは持たない。
-- `icp-cli` v0.2.6 の Quickstart では、Motoko backend + React frontend の非対話ワンライナーは以下。
-  ```sh
-  icp new my-project --subfolder hello-world \
-    --define backend_type=motoko \
-    --define frontend_type=react \
-    --define network_type=Default
-  ```
-- エージェントやCIから実行する場合は対話を避けるため、実装では `--silent` と `--define ...` を併用する方針にする。
-  ```sh
-  icp new {projectName} --subfolder hello-world \
-    --define backend_type=motoko \
-    --define frontend_type=react \
-    --define network_type=Default \
-    --silent
-  ```
-- `icp new` の `<NAME>` は kebab-case へ自動変換される。現行 `ndfx new` は空白とハイフンを `_` に置換しているため、既存互換を優先するなら `--force` を付け、`projectName` の `_` ベース正規化を維持する。`icp-cli` 流儀に寄せるなら kebab-case を受け入れる。初回実装では既存互換のため `--force` を付ける案を第一候補にする。
-- `icp-cli` プロジェクトのルートは `dfx.json` ではなく `icp.yaml`。公式の典型構造は以下。
-  ```text
-  my-project/
-  ├── icp.yaml
-  ├── .icp/
-  │   └── data/
-  ├── backend/
-  │   ├── canister.yaml
-  │   ├── backend.did
-  │   └── src/main.mo
-  └── frontend/
-      ├── canister.yaml
-      └── app/
-  ```
-- `icp-cli` 公式 `hello-world` テンプレートを `backend_type=motoko` で生成すると、`icp.yaml` は `backend` と `frontend` の外部 canister manifest を参照し、`backend/canister.yaml` は `@dfinity/motoko@v4.1.0` recipe を使う。
-- Nim backend へ差し替える場合は、`backend/src/main.mo` と Motoko recipe を削除し、以下のような custom script build へ置き換える。
-  ```yaml
-  name: backend
-  build:
-    steps:
-      - type: script
-        commands:
-          - ndfx build
-  ```
-- `icp-cli` の build script は canister directory をカレントディレクトリとして実行するが、`ndfx build` 側で project root を見つけて `nimble c` を実行し、`ICP_WASM_OUTPUT_PATH` があれば最終成果物をそこへコピーする方針にした。`cp main.wasm ...` を build script 側に書くより、`ndfx build` に寄せた方が再利用しやすい。
-- `dfx.json` の `DFX_NETWORK` による dev/release 切替はそのまま使えない。`icp-cli` ではコマンド側に `-e/--environment` があり、既定は `local`。 build script に渡る公式変数として確認済みなのは `ICP_WASM_OUTPUT_PATH`。`ICP_ENVIRONMENT` は CLI の既定環境指定用変数だが、`icp build -e ic` 時に必ず build script 環境へ反映されるかは要実機確認。
-- dev/release 切替の候補:
-  - 候補A: `ndfx build` を release 既定にし、ローカル開発はユーザーが明示的に `ndfx dev` または `NDFX_PROFILE=dev icp build` を使う
-  - 候補B: `icp-cli` の環境名を build script 内で確実に取得できることを確認し、`local` のとき `ndfx dev`、それ以外は `ndfx build`
-  - 候補C: `backend/canister.yaml` の build command を常に `ndfx build --output "$ICP_WASM_OUTPUT_PATH"` にして、`dfx` 時代の暗黙切替を廃止する
-- 初回実装では、デプロイ再現性を優先して候補Cを第一候補にする。必要なら後続で `NDFX_PROFILE=dev` を明示サポートする。
-- frontend 選択肢の扱いは再設計が必要。現行 `ndfx new` は `SvelteKit` / `React` / `Vue` / `Vanilla JS` / `No JS template` / `None` を提示しているが、`icp-cli` v0.2.6 の公式 `hello-world` テンプレートは `frontend_type` が実質 React のみ。
-- frontend 方針:
-  - `React`: `hello-world` テンプレートを使い、backend のみ Nim に差し替える
-  - `None`: `motoko` テンプレート、または `hello-world` 生成後に `frontend/` 参照を除去する。Nim backend だけなら `motoko` テンプレートを土台にする方が小さい
-  - `SvelteKit` / `Vue` / `Vanilla JS` / `No JS template`: `icp-cli` 公式テンプレートに同等の選択肢がないため、初回実装では非対応として明示するか、React テンプレートへ誘導する
-- `--extras` の扱いも同等置換はできない。
-  - `internet-identity`: `icp-cli` managed network は `ii: true` を設定可能。ただし dfx の frontend boilerplate 追加とは別物なので、生成コードの認証UIまでは自動移植しない
-  - `bitcoin`: `bitcoin-starter` テンプレート、または local network の `bitcoind-addr` 設定が候補。ただし dfx extras と完全互換ではない
-  - `frontend-tests`: 現行 `icp-cli` template の標準変数では見当たらないため、必要なら NICP 側で独自生成する
-- `.gitignore` は `.dfx/` ではなく `.icp/cache/` を無視する。公式 docs は `.icp/data/` を mainnet canister ID mapping の保持先として扱うため、`.icp/data/.gitkeep` は残し、`.icp/data/` を無条件に無視しない。
-- コマンド対応の基本表:
-  - `dfx start --background` → `icp network start -d`
-  - `dfx stop` → `icp network stop`
-  - `dfx build <canister>` → `icp build <canister>`
-  - `dfx deploy` → `icp deploy`
-  - `dfx deploy --network ic` → `icp deploy -e ic`
-  - `dfx canister call <canister> <method> '(args)'` → `icp canister call <canister> <method> '(args)'`
-  - `dfx canister ls` → `icp canister list`
-  - `dfx identity use <id>` → `icp identity default <id>`
-- 生成後の目標構造案:
-  ```text
-  {projectName}/
-  ├── icp.yaml
-  ├── .gitignore
-  ├── .icp/data/.gitkeep
-  ├── {projectName}.nimble
-  ├── backend/
-  │   ├── canister.yaml
-  │   ├── backend.did
-  │   ├── config.nims
-  │   └── src/main.nim
-  └── frontend/              # React選択時のみ
-      ├── canister.yaml
-      └── app/
-  ```
-- Nimble の `srcDir` は新構造に合わせて `backend/src` とする。現行の `src/{projectName}_backend` は `dfx new` 構造由来なので、`icp-cli` 構造へ寄せる場合は廃止候補。
-- `backend.did` は backend canister manifest と同じディレクトリに置く方が `icp-cli` 公式テンプレートに近い。現行の `{projectName}.did` ルート配置は廃止候補。
-- 実装時は `dfx.json` を生成・編集しない。JSON操作ではなく YAML 生成・編集が必要になるため、Nim 側で YAML ライブラリを追加するか、単純なテンプレート文字列で `icp.yaml` / `canister.yaml` を書き出す。初回は固定テンプレートで十分。
-- `examples.bk` の移植は、まず旧ディレクトリを維持したまま `examples/<sample>/backend/*` と `examples/<sample>/*.nimble` / `icp.yaml` を追加する段階的移行で進める。これにより旧 `dfx` ベースのテスト資産を壊さずに、`icp-cli` 側の新構造を並行して整備できる。
-- `examples.bk` からの再生成は、手作業のコピペではなく `scripts/rebuild_examples_icp.sh` を介して共通テンプレートを吐き出す方針にした。ここでは backend-only サンプルを先に移し、Motoko / frontend 系は次の段階で埋める。
 
-## examples.bk 再生成の実装方針・設計書
+### 背景
 
-### 目的
-- 既存の `/application/examples.bk` は `dfx.json`、`build.sh`、`src/{name}_backend` を前提にした旧構造のサンプル群である。
-- 新しい `/application/examples` は、`icp.yaml`、`backend/canister.yaml`、`backend/src`、`backend/backend.did` を前提にした `icp-cli` 構造へ統一する。
-- 生成の入口は `nicp new` とし、手作業で一からディレクトリを組むのではなく、現行 CLI が作る標準構造を土台にして各サンプル固有のコードだけを移植する。
+このプロジェクトでは、ICP の `sign_with_ecdsa` が返す secp256k1 ECDSA 署名を、Nim の単体テストやサンプルユースケース内で検証している。現状は `nimcrypto` を Keccak-256 に、`secp256k1` を署名検証・公開鍵展開・公開鍵復元に使っている。
 
-### 対象プロジェクト
-- `examples.bk` 直下またはその下位に `dfx.json` を持つディレクトリを「旧サンプルプロジェクト」とみなす。
-- 検出済みの対象は以下。
-  - `arg_msg_reply`
-  - `counter`
-  - `dfx_hello`
-  - `ecdsa_args`
-  - `erc20`
-  - `http_outcall/motoko`
-  - `http_outcall/nim`
-  - `stable_memory`
-  - `t_ecdsa`
-  - `type_test/motoko`
-  - `type_test/nim`
-- 出力先は原則として `/application/examples/{相対パス}` とする。たとえば `examples.bk/http_outcall/nim` は `examples/http_outcall/nim`、`examples.bk/type_test/motoko` は `examples/type_test/motoko` に作る。
-- すでに `/application/examples` 配下に対象ディレクトリがある場合は、実装前に差分を確認し、ユーザー作業の混入がないことを確認してから更新する。未追跡・手編集がある場合は上書きしない。
+このブランチでは、暗号処理を `nim-rustcrypto` に集約する。`nim-rustcrypto` は RustCrypto を小さな Rust FFI static library 経由で Nim から使うライブラリで、README 上では SHA-256 / SHA3-256 / Keccak-256、secp256k1 ECDSA、recoverable ECDSA、Ethereum helper を提供している。Linux x86_64 では `nimble add` / `nimble install` 時に prebuilt static archive を取得するため、通常利用では Rust toolchain を必須にしない設計になっている。
 
-### 生成コマンド方針
-- Nim backend を持つサンプルは、対象ディレクトリの親ディレクトリへ移動してから以下の形で生成する。
-  ```sh
-  nicp new {folder_name} none
-  ```
-- frontend canister が必要なサンプルは、`nicp new {folder_name}` で React frontend 付きの土台を生成する。ただし `erc20` の asset frontend や `t_ecdsa` の Preact/Vite frontend は、生成された React app をそのまま使わず、旧 frontend 資産を新しい `frontend/` 配下の `icp-cli` asset canister 構造へ合わせて移植する。
-- `dfx_hello`、`http_outcall/motoko`、`type_test/motoko` は Motoko 比較用サンプルであり、`nicp new` の Nim backend 土台とは言語が異なる。依頼の「`nicp new` を使う」を満たすため、初期ディレクトリ生成だけは `nicp new {folder_name} none` で行い、その後 `backend/src/main.nim` と Nim 用設定を削除して Motoko backend 用の `backend/src/main.mo` と `backend/canister.yaml` に差し替える。ただし、Motoko 専用テンプレートとしての純度を優先する場合は、この3件だけ `icp new` 生成へ切り替える余地を残す。
+### 依存変更方針
 
-### 移植ルール
-- `dfx.json` は移植しない。canister 定義は `icp.yaml` と各 canister の `canister.yaml` へ移す。
-- `build.sh` は移植しない。Nim backend は `backend/canister.yaml` の script step から `nicp build` を呼ぶ。
-- 旧 `src/{canister_name}/config.nims` は、原則として `nicp new` が生成する `backend/config.nims` を基準にし、サンプル固有の差分がある場合だけ反映する。
-- 旧 `src/{canister_name}/*.nim` は `backend/src/` へ移す。複数ファイル構成の `t_ecdsa` と `http_outcall/nim` は、import パスが `backend/src` 前提で解決できるように保つ。
-- 旧ルートの `{project}.did` または `nim.did` は `backend/backend.did` へ移す。canister 名を `backend` へ統一する場合は README と呼び出し例も `backend` に合わせる。
-- `internet_identity` は `dfx.json` の canister としては移植しない。必要なサンプルでは `icp-cli` の managed network 設定または frontend 側の認証設定として表現する。
-- `.dfx/`、`.nimcache/`、`node_modules/`、`dist/`、生成済み `.wasm`、旧 declarations は移植しない。
-- README、テストスクリプト、呼び出し例は `dfx` コマンドから `icp` コマンドへ置き換える。代表対応は既存の「コマンド対応の基本表」に従う。
+`nicp_cdk.nimble` は以下の方針で変更する。
 
-### canister 名の設計
-- `nicp new` 標準の canister 名は `backend` / `frontend` であるため、新サンプルでも原則としてこの名前に寄せる。
-- 旧名を残す必要がある frontend バインディングやテストがある場合のみ、`icp.yaml` と `canister.yaml` の `name` を旧 `dfx.json` の canister 名へ寄せる。ただし初回方針は `backend` / `frontend` 統一を優先する。
-- `t_ecdsa` のように frontend から backend canister 名を参照するサンプルでは、バインディング生成先と import 名を新しい canister 名へ合わせる。
+```nim
+# 削除
+requires "nimcrypto >= 0.6.3"
+requires "secp256k1 >= 0.5.2"
 
-### サンプル別の方針
-- `arg_msg_reply`: `nicp new arg_msg_reply none` で backend-only 生成。`main.nim` と `arg_msg_reply.did` を `backend/` へ移植し、README の canister call を `icp canister call backend ...` へ更新する。
-- `counter`: backend-only。`counter.did` と `main.nim` を移植し、旧 `c_headers/` は生成物扱いとして移植しない。
-- `ecdsa_args`: backend-only。`internet_identity` は旧 dfx canister としては移植せず、必要性を README に明記する。
-- `stable_memory`: backend-only。upgrade テスト用スクリプトは `icp` コマンドへ書き換えて移植する。安定メモリ検証のため、deploy/upgrade の手順を README に残す。
-- `http_outcall/nim`: backend-only。`controller.nim` を含む複数ファイル構成を `backend/src/` に移植し、HTTP outcall に必要な cycles/permission 手順を README に残す。
-- `type_test/nim`: backend-only。`nim.did` と `main.nim` を移植し、型互換テストの実行導線を `type_test/run_compatibility_test.sh` 側で新パス対応にする。
-- `t_ecdsa`: frontend 付き。backend は Nim 複数ファイルを移植し、frontend は旧 `src/t_ecdsa_frontend` のソース、package、vite 設定、テストを `frontend/app` または `frontend/` の asset canister 構造へ移す。`node_modules`、`dist`、生成済み declarations は移植しない。
-- `erc20`: frontend 付き。backend は Nim を移植し、asset frontend は `frontend` canister として `assets/` を配置する。旧 `internet_identity` canister は移植しない。
-- `dfx_hello`: Motoko-only。`nicp new dfx_hello none` 生成後に Motoko backend へ差し替えるか、例外として `icp new` の Motoko テンプレートを使う。実装前にどちらで統一するか決める。
-- `http_outcall/motoko`: Motoko-only。`dfx_hello` と同じ扱い。`main.mo` と README を `icp-cli` 構造へ移す。
-- `type_test/motoko`: Motoko-only。Nim 版との比較対象として残す。`type_test/run_compatibility_test.sh` が両方の新パスを参照するようにする。
+# 追加
+requires "https://github.com/itsumura-h/nim-rustcrypto?subdir=src/nim-rustcrypto"
+```
 
-### 検証方針
-- 全対象で `icp project show` を実行し、`icp.yaml` と canister manifest が解釈できることを確認する。
-- Nim backend は全対象で `icp build backend` を実行する。
-- Motoko-only サンプルは `icp build backend` が通るように `backend/canister.yaml` の recipe を調整する。
-- frontend 付きサンプルは `icp build frontend` を実行し、package install が必要な場合は lockfile を更新する。
-- 代表的な backend-only サンプルとして `counter`、複数ファイル Nim サンプルとして `t_ecdsa` または `http_outcall/nim`、upgrade 系として `stable_memory` を `icp deploy` まで確認する。
-- 実装作業では `git add` と `git commit` は行わない。
+バージョン固定が必要な場合は、実装時点で利用できる tag を確認し、`#v0.1.1` のように ref を固定することを検討する。2026-05-10 調査時点では GitHub 上の最新 release は `v0.1.1`。
+
+### 既存の旧依存箇所
+
+旧依存の実体は以下に集中している。
+
+- `src/nicp_cdk/algorithm/ecdsa.nim`
+  - `nimcrypto/keccak`
+  - `secp256k1`
+  - `keccak256Hash`
+  - `validateSignatureWithSecp256k1`
+  - `verifySignatureWithSecp256k1`
+- `src/nicp_cdk/algorithm/ethereum.nim`
+  - `nimcrypto/keccak`
+  - `secp256k1`
+  - `decompressPublicKey`
+  - `recoverPublicKeyFromSignature`
+  - `publicKeyToEthereumAddress`
+  - `verifyEthereumSignatureWithAddress`
+  - `convertIcpSignatureToEthereum`
+- `tests/test_sign_verify.nim`
+  - テスト内で `secp256k1` と `nimcrypto/keccak` を直接 import
+
+`EcdsaCurve.secp256k1` のような Candid variant 名は暗号ライブラリ依存ではないため、置換対象に含めない。
+
+### 設計方針
+
+#### 1. 公開API互換を優先する
+
+サンプルやテストの呼び出し側を広く書き換えないため、既存の公開関数名と戻り値は原則維持する。
+
+- `ecdsa.keccak256Hash(message: string): seq[uint8]`
+- `ecdsa.validateSignatureWithSecp256k1(messageHash, signatureBytes, publicKeyBytes): bool`
+- `ecdsa.verifySignatureWithSecp256k1(message, signatureHex, publicKeyHex): bool`
+- `ethereum.decompressPublicKey(compressedKey): seq[uint8]`
+- `ethereum.keccak256Hash(data: string): seq[uint8]`
+- `ethereum.recoverPublicKeyFromSignature(messageHash, signatureHex, recoveryId): seq[uint8]`
+- `ethereum.publicKeyToEthereumAddress(pubKey): string`
+- `ethereum.icpPublicKeyToEvmAddress(icpPublicKey): string`
+- `ethereum.verifyEthereumSignatureWithAddress(ethereumAddress, message, signatureHex): bool`
+- `ethereum.convertIcpSignatureToEthereum(icpSignature, messageHash, publicKey): string`
+
+内部実装だけを `rustcrypto` に置き換える。関数名の `Secp256k1` は概念名として残してよいが、コメント内の「secp256k1 library」は「RustCrypto secp256k1 implementation」に更新する。
+
+#### 2. Keccak-256 は `rustcrypto/algorithm/sha3` に集約する
+
+`nimcrypto/keccak` の手動 context 操作をやめ、`rustcrypto/algorithm/sha3` の `keccak256` / `keccak256Hex` を使う。
+
+- `ecdsa.keccak256Hash` はプレーンメッセージをそのまま Keccak-256 する。
+- `ethereum.keccak256Hash` は現行どおり EIP-191 personal message (`"\x19Ethereum Signed Message:\n" & $len & message`) を組み立ててから Keccak-256 する。
+- Ethereum address 生成では、uncompressed public key の先頭 `0x04` を除いた 64 bytes を Keccak-256 し、末尾 20 bytes を address とする現行仕様を維持する。
+
+#### 3. secp256k1 の型変換を小さな内部ヘルパーに閉じ込める
+
+`nim-rustcrypto` の secp256k1 API は固定長型を使うため、既存の `seq[uint8]` / hex string から以下の型へ変換する内部ヘルパーを設ける。
+
+- 32 bytes digest -> `Secp256k1MessageDigest`
+- 64 bytes compact signature -> `Secp256k1Signature`
+- 65 bytes recoverable signature -> `Secp256k1RecoverableSignature`
+- 33 bytes compressed public key -> `Secp256k1CompressedPublicKey`
+- 65 bytes uncompressed public key -> `Secp256k1UncompressedPublicKey`
+
+変換は `rustcrypto/algorithm/common` の hex helper、または固定長 array へのコピーで行う。入力長が不正な場合は、既存の挙動に合わせて検証関数では `false` を返し、変換関数では既存の例外型 (`EthereumConversionError`, `SignatureFormatError`, `EcdsaVerificationError`) を投げる。
+
+#### 4. 署名検証は raw 32-byte digest API を使う
+
+ICP の `sign_with_ecdsa` は 32 bytes の `message_hash` に署名するため、検証も message string helper ではなく raw digest 版を使う。
+
+設計上の対応は以下。
+
+- `verifySignatureWithSecp256k1(message, signatureHex, publicKeyHex)`
+  - `message` を `ecdsa.keccak256Hash` で 32 bytes digest 化
+  - `signatureHex` を 64 bytes compact signature として解釈
+  - `publicKeyHex` は ICP public key の 33 bytes compressed SEC1 を想定
+  - `Secp256k1.verify(digest, compressedPubKey, signature)` を使う
+- `validateSignatureWithSecp256k1(messageHash, signatureBytes, publicKeyBytes)`
+  - `messageHash.len == 32`
+  - `signatureBytes.len == 64`
+  - `publicKeyBytes.len == 33` または `65`
+  - public key 長に応じて compressed / uncompressed overload を使う
+
+#### 5. Ethereum helper は高水準APIを優先し、足りない箇所のみ低水準APIを使う
+
+`nim-rustcrypto` には `rustcrypto/ethereum` があり、Keccak-256、uncompressed secp256k1 public key からの address 生成、EIP-191 personal message、recoverable ECDSA を提供している。
+
+移行時は以下の順に採用する。
+
+1. `Ethereum.address(uncompressedPubKey)` で `publicKeyToEthereumAddress` を置き換える。
+2. `Ethereum.keccak256` で address 用 Keccak-256 を置き換える。
+3. `Ethereum.verifyPersonalMessage` が既存の `verifyEthereumSignatureWithAddress` の仕様に合う場合は採用する。
+4. ICP 署名の `r+s` から `v` を探索する `convertIcpSignatureToEthereum` は、既存と同じく recovery id `0` / `1` を試して公開鍵一致を確認する。`rustcrypto/ethereum` だけで public key 比較まで完結しない場合は `rustcrypto/algorithm/secp256k1` の recoverable signature API を使う。
+
+`nim-rustcrypto` の Ethereum verify は wallet address による検証を主目的としているため、ICP public key と一致する recovery id を探す用途では低水準 secp256k1 API の利用を許容する。
+
+#### 6. 圧縮公開鍵の展開
+
+`decompressPublicKey` は 33 bytes compressed SEC1 public key を 65 bytes uncompressed SEC1 public key に変換する。`nim-rustcrypto` の `Secp256k1.publicKeyUncompressed` が secret key 由来のみの場合は、compressed public key から uncompressed public key へ変換できる API を確認する。
+
+もし高水準 wrapper が不足している場合の優先順位は以下。
+
+1. `rustcrypto/algorithm/secp256k1` に既存の compressed -> uncompressed wrapper があれば使用する。
+2. `rustcrypto/ethereum` の address helper が compressed input を受け付けないか確認し、受け付けるなら `icpPublicKeyToEvmAddress` は直接 helper 化する。ただし `decompressPublicKey` の公開APIは別途維持する。
+3. wrapper が存在しない場合は、`nim-rustcrypto` 側への wrapper 追加または低水準 FFI 追加が必要。現ブランチではできるだけ上流API追加を避け、既存公開APIで実現できる範囲を優先する。
+
+この点は実装前の確認事項として扱う。
+
+### テスト方針
+
+最小確認は以下。
+
+```sh
+nim c -r --skipUserCfg tests/test_sign_verify.nim
+nim c -r --skipUserCfg tests/algorithm/test_eth_address.nim
+nim c -r --skipUserCfg tests/management_canister/test_ecdsa.nim
+nimble test
+```
+
+`tests/management_canister/test_ecdsa.nim` は dfx availability に依存するため、環境に dfx がない場合は skip される想定。暗号置換の主確認は `tests/test_sign_verify.nim` と `tests/algorithm/test_eth_address.nim` で行う。
+
+追加・修正すべきテスト観点。
+
+- `keccak256Hash` が 32 bytes を返し、同一入力で決定的であること。
+- 既知 secret key / message digest / public key / signature の round trip sign-verify。
+- ICP 形式の 64 bytes compact signature を検証できること。
+- 33 bytes compressed public key から Ethereum address を導出できること。
+- 64 bytes ICP signature から `v=27/28` 付き Ethereum signature を生成できること。
+- 不正長 signature / digest / public key は既存の例外型または `false` に正しく落ちること。
+
+### リスクと確認事項
+
+- `nim-rustcrypto` の FFI static archive は README 上 Linux x86_64 対応とされている。CI や開発環境が Linux x86_64 以外を含む場合は追加対応が必要。
+- `decompressPublicKey` に相当する高水準 API の有無は実装前に確認する。なければ wrapper/FFI 追加が必要になる可能性がある。
+- `nim-rustcrypto` の recoverable signature API の recovery id 表現が `0/1` か Ethereum `27/28` かを実装時に確認する。既存実装では復元には `0/1`、Ethereum signature の出力には `27/28` を使っている。
+- `ecdsa.keccak256Hash` と `ethereum.keccak256Hash` は同名だが意味が異なる。前者は raw Keccak、後者は EIP-191 personal message Keccak なので、移行時に混同しない。
+- `nim-rustcrypto` の DER helper は今回の ICP signature 検証では原則不要。ICP Management Canister の signature は 64 bytes `r || s` として扱う。
+- `nim-rustcrypto` 側には compressed SEC1 公開鍵を 65 bytes uncompressed に変換する高水準 wrapper がなかったため、`decompressPublicKey` は pure Nim の secp256k1 フィールド演算で実装した。公開API は維持しつつ、`icpPublicKeyToEvmAddress` はこの内部実装に依存する。

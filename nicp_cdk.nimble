@@ -16,10 +16,9 @@ binDir        = "src/bin"
 
 requires "nim >= 2.2.2"
 requires "cligen >= 1.8.3"
-requires "nimcrypto >= 0.6.3"
-requires "secp256k1 >= 0.5.2"
 requires "illwill >= 0.4.1"
 requires "base32 >= 0.1.3"
+requires "https://github.com/itsumura-h/nim-rustcrypto?subdir=src/nim-rustcrypto#v0.1.1"
 
 task test, "Run tests":
   exec """testament p "tests/test_*.nim" """

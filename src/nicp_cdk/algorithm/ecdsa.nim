@@ -1,11 +1,11 @@
 ## ECDSA Signature Verification Module
 ## 
-## This module provides pure ECDSA cryptographic operations using secp256k1.
+## This module provides pure ECDSA cryptographic operations using RustCrypto secp256k1.
 ## It handles raw byte operations without 0x prefixes for low-level cryptographic processing.
 ## For Ethereum-specific operations with 0x prefixes, use the ethereum.nim module.
 
-import nimcrypto/keccak
-import secp256k1
+import rustcrypto/algorithm/secp256k1
+import rustcrypto/algorithm/sha3
 import ./hex_bytes
 import ../ic_api
 
@@ -14,16 +14,17 @@ type
 
 
 func keccak256Hash*(message: string): seq[uint8] =
-  ## Calculate Keccak-256 hash of message
-  var keccakCtx: keccak256
-  keccakCtx.init()
-  keccakCtx.update(message)
-  let hash = keccakCtx.finish()
-  
-  # Convert array to seq properly
-  result = newSeq[uint8](32)
-  for i in 0..<32:
-    result[i] = hash.data[i]
+  ## Calculate Keccak-256 hash of message.
+  let hash = keccak256(message)
+  result = newSeq[uint8](hash.len)
+  for i, b in hash:
+    result[i] = b
+
+
+proc toFixedArray[T](data: openArray[byte]): T =
+  doAssert data.len == result.len
+  for i in 0..<data.len:
+    result[i] = data[i]
 
 
 proc validateSignatureWithSecp256k1*(
@@ -31,35 +32,25 @@ proc validateSignatureWithSecp256k1*(
   signatureBytes: seq[uint8], 
   publicKeyBytes: seq[uint8]
 ): bool =
-  ## Validate signature using secp256k1 library
-  ## This function encapsulates direct secp256k1 calls for signature validation
+  ## Validate signature using RustCrypto secp256k1.
   try:
-    let sigResult = SkSignature.fromHex(signatureBytes.toHexString())
-    let msgResult = SkMessage.fromBytes(messageHash)
-    let pubKeyResult = SkPublicKey.fromRaw(publicKeyBytes)
-    
-    # Check if all parsing succeeded
-    if sigResult.isErr or msgResult.isErr or pubKeyResult.isErr:
-      devEcho "Error parsing signature components:"
-      if sigResult.isErr:
-        devEcho "  Signature error: ", sigResult.error
-      if msgResult.isErr:
-        devEcho "  Message error: ", msgResult.error
-      if pubKeyResult.isErr:
-        devEcho "  Public key error: ", pubKeyResult.error
+    if messageHash.len != 32 or signatureBytes.len != 64:
       return false
-    
-    # Verify signature
-    let isValid = secp256k1.verify(
-      sigResult.get(),
-      msgResult.get(),
-      pubKeyResult.get()
-    )
-    devEcho "Signature validation result: ", isValid
-    return isValid
-    
-  except Exception as e:
-    devEcho "Exception in validateSignatureWithSecp256k1: ", e.msg
+
+    let digest = toFixedArray[Secp256k1MessageDigest](messageHash)
+    let signature = toFixedArray[Secp256k1Signature](signatureBytes)
+
+    case publicKeyBytes.len
+    of 33:
+      let publicKey = toFixedArray[Secp256k1CompressedPublicKey](publicKeyBytes)
+      return Secp256k1.verify(digest, publicKey, signature)
+    of 65:
+      let publicKey = toFixedArray[Secp256k1UncompressedPublicKey](publicKeyBytes)
+      return Secp256k1.verify(digest, publicKey, signature)
+    else:
+      return false
+
+  except CatchableError:
     return false
 
 
@@ -68,32 +59,12 @@ proc verifySignatureWithSecp256k1*(
   signatureHex: string,
   publicKeyHex: string
 ): bool =
-  ## Verify signature using secp256k1 library with hex inputs
-  ## This function encapsulates direct secp256k1 calls for signature verification
+  ## Verify signature using RustCrypto secp256k1 with hex inputs.
   try:
     let messageHash = keccak256Hash(message)
-    let sigResult = SkSignature.fromHex(signatureHex)
-    let msgResult = SkMessage.fromBytes(messageHash)
-    let pubKeyResult = SkPublicKey.fromRaw(hexToBytes(publicKeyHex))
+    let signatureBytes = hexToBytes(signatureHex)
+    let publicKeyBytes = hexToBytes(publicKeyHex)
+    return validateSignatureWithSecp256k1(messageHash, signatureBytes, publicKeyBytes)
 
-    if sigResult.isErr or msgResult.isErr or pubKeyResult.isErr:
-      devEcho "Error parsing components for verification:"
-      if sigResult.isErr:
-        devEcho "  Signature error: ", sigResult.error
-      if msgResult.isErr:
-        devEcho "  Message error: ", msgResult.error
-      if pubKeyResult.isErr:
-        devEcho "  Public key error: ", pubKeyResult.error
-      return false
-
-    let isValid = secp256k1.verify(
-      sigResult.get(),
-      msgResult.get(),
-      pubKeyResult.get()
-    )
-    devEcho "Signature verification result: ", isValid
-    return isValid
-
-  except Exception as e:
-    devEcho "Exception in verifySignatureWithSecp256k1: ", e.msg
+  except CatchableError:
     return false
