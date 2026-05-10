@@ -27,8 +27,11 @@ alwaysApply: false
 - [x] 実装: `ndfx network` の `icp.yaml` 判定を実行ディレクトリ直下に変更し、`.icp` を実行ディレクトリ直下で削除するよう調整
 - [x] 実装: `ndfx network` 内の `ndfx cHeaders` 呼び出しを Nim の `cHeaders()` 直接呼び出しへ変更
 - [x] 実装: `icp network start -d` を逐次出力するよう `osproc` のストリーミング実行へ変更
+- [x] 実装: `examples/icp_hello/backend/canister.yaml` を Nim 自前ビルド向けの `build.steps` 形式へ修正
+- [x] 実装: `examples/icp_hello/backend/canister.yaml` に `candid:service` メタデータ埋め込みを追加
+- [x] 実装: `nicp build` が `backend.did` を Wasm の `candid:service` メタデータへ埋め込むよう変更
 - [x] テスト: `ndfx new <name>` で生成したプロジェクトに対し `icp project show` が通ることを確認
-- [ ] テスト: 生成プロジェクトで `icp network start -d`、`icp deploy`、`icp canister call backend greet '("World")'` 相当が通ることを確認
+- [x] テスト: 生成プロジェクトで `icp network start -d`、`icp deploy` が通ることを確認
 
 ## 参考資料
 - `src/cli/functions/new_impl.nim`

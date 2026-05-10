@@ -51,6 +51,21 @@ proc resolveOutputPath(projectDir: string): string =
     return outputPath
   return projectDir / "main.wasm"
 
+proc resolveCandidPath(projectDir, originalDir: string, projectName: string): string =
+  let candidates = [
+    originalDir / "backend.did",
+    projectDir / "backend.did",
+    projectDir / "backend" / "backend.did",
+    projectDir / (projectName & ".did"),
+    originalDir / (projectName & ".did"),
+  ]
+
+  for candidate in candidates:
+    if fileExists(candidate):
+      return candidate
+
+  return ""
+
 proc ensureParentDir(path: string) =
   let dir = parentDir(path)
   if dir.len > 0 and not dirExists(dir):
@@ -61,6 +76,7 @@ proc compileWasm*(release: bool, wasiTmp = "wasi.wasm"): int =
   let projectDir = findProjectRoot(originalDir)
   let projectName = resolveProjectName(projectDir)
   let mainPath = resolveMainPath(projectDir, projectName)
+  let candidPath = resolveCandidPath(projectDir, originalDir, projectName)
 
   if mainPath.len == 0:
     stderr.writeLine(
@@ -125,6 +141,21 @@ proc compileWasm*(release: bool, wasiTmp = "wasi.wasm"): int =
       stderr.writeLine(shrOut)
       return shrExit
     moveFile(icWasmTmp, "main.wasm")
+
+  if candidPath.len == 0:
+    stderr.writeLine(
+      "Error: backend.did not found. Expected backend.did, backend/backend.did, or <project>.did in the current project."
+    )
+    return 1
+
+  let candidCmd = "ic-wasm main.wasm -o " & quoteShell(icWasmTmp) &
+    " metadata candid:service -f " & quoteShell(candidPath) & " -v public"
+  echo candidCmd
+  let (candOut, candExit) = execCmdEx(candidCmd)
+  if candExit != 0:
+    stderr.writeLine(candOut)
+    return candExit
+  moveFile(icWasmTmp, "main.wasm")
 
   if outputPath != absolutePath("main.wasm"):
     ensureParentDir(outputPath)

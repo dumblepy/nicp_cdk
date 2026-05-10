@@ -113,6 +113,10 @@ ENV PATH $PATH:/root/.node/bin
 RUN curl -fsSL https://get.pnpm.io/install.sh | bash -s -- -y
 ENV PATH $PATH:/root/.local/share/pnpm
 
+# ic-mops, compile motoko
+# https://github.com/dfinity/ic-mops
+RUN npm i -g ic-mops
+
 # foundry
 RUN curl -L https://foundry.paradigm.xyz | bash
 ENV PATH=$PATH:/root/.foundry/bin
