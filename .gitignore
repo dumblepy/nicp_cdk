@@ -6,6 +6,7 @@
 testresults
 nimcache
 
+.icp
 *.wasm
 *.wat
 .env

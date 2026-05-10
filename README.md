@@ -120,16 +120,24 @@ ndfx new hello
 cd hello
 ```
 
+Use `ndfx new hello none` if you want a backend-only project.
+
 > [!WARNING]  
-> Check the `hello/src/hello_backend/config.nims` file:  
+> Check the `hello/backend/config.nims` file:  
 > - Is the `ic wasi polyfill path` correct?  
 > - Is the `WASI SDK sysroot` correct?  
 
 ### Run a local network and deploy
 
 ```sh
-dfx stop && dfx start --clean --background --host 0.0.0.0:4943
-dfx deploy
+icp network start -d
+icp deploy
+```
+
+If you want to call the backend directly, use:
+
+```sh
+icp canister call backend greet '("Internet Computer")'
 ```
 
 ## Stable memory
