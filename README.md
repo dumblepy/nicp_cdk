@@ -101,14 +101,14 @@ curl https://nim-lang.org/choosenim/init.sh -sSf | sh
 nimble install https://github.com/itsumura-h/nicp_cdk
 ```
 
-Now you can use the `ndfx` command.
+Now you can use the `nicp` command.
 
 ## Create a new project
 
 ### Download c headers
 
 ```sh
-ndfx c_headers
+nicp c_headers
 ```
 `/root/.ic-c-headers` will be created.
 
@@ -116,11 +116,11 @@ ndfx c_headers
 ### Create a new project
 
 ```sh
-ndfx new hello
+nicp new hello
 cd hello
 ```
 
-Use `ndfx new hello none` if you want a backend-only project.
+Use `nicp new hello none` if you want a backend-only project.
 
 > [!WARNING]  
 > Check the `hello/backend/config.nims` file:  

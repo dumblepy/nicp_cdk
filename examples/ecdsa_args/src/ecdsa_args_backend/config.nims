@@ -23,7 +23,7 @@ when defined(release):
   switch("passL", "-flto") # link time optimization for linker
 
 # ic0.h path
-# to download, run `ndfx c_headers`
+# to download, run `nicp c_headers`
 let cHeadersPath = "/root/.ic-c-headers"
 switch("passC", "-I" & cHeadersPath)
 switch("passL", "-L" & cHeadersPath)

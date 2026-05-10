@@ -68,7 +68,7 @@ build:
   steps:
     - type: script
       commands:
-        - ndfx build
+        - nicp build
 """
 
 const backendGitignore = """
@@ -223,7 +223,7 @@ proc renderBackendReadme(): string =
   result = """
 # Nim Backend
 
-This canister is built with `ndfx build` or `ndfx dev` and deployed through `icp-cli`.
+This canister is built with `nicp build` or `nicp dev` and deployed through `icp-cli`.
 
 ## Overview
 
@@ -260,7 +260,7 @@ This project does not include a frontend canister.
 
   result = &"""# Hello World
 
-Welcome to your new `{projectName}` project. It demonstrates a Nim backend canister built with `ndfx` and managed by `icp-cli`.
+Welcome to your new `{projectName}` project. It demonstrates a Nim backend canister built with `nicp` and managed by `icp-cli`.
 
 ## Overview
 
@@ -295,11 +295,11 @@ If you want to build the backend directly, run:
 
 ```bash
 cd backend
-ndfx dev
+nicp dev
 ```
 
-Use `ndfx build` instead of `ndfx dev` for a release-oriented build.
-Pass `none` as the second argument to `ndfx new` if you want a backend-only project.
+Use `nicp build` instead of `nicp dev` for a release-oriented build.
+Pass `none` as the second argument to `nicp new` if you want a backend-only project.
 
 {frontendRunBlock}
 Finally, stop the local network with:

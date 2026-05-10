@@ -7,7 +7,7 @@ set -x
 
 # Run make to start dfx in background
 nimble install -y
-ndfx cHeaders
+nicp cHeaders
 dfx stop
 rm -rf /application/examples/*/.dfx
 dfx start --clean --background --host 0.0.0.0:4943 --domain localhost --domain 0.0.0.0

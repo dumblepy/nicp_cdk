@@ -5,5 +5,5 @@ proc build*(): int =
   compileWasm(release = true)
 
 proc productionBuild*(): int =
-  ## Backward-compatible alias for `ndfx build`.
+  ## Backward-compatible alias for `nicp build`.
   build()
