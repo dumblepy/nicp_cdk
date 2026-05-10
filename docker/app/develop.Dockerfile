@@ -4,8 +4,8 @@ FROM ubuntu:26.04 AS wasi-tools
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt update && \
-    apt upgrade -y
-RUN apt install -y \
+    apt upgrade -y && \
+    apt install -y \
         build-essential \
         curl \
         git
