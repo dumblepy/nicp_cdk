@@ -1,4 +1,3 @@
-# Various IDEs and Editors
 .vscode/
 .idea/
 **/*~
@@ -7,19 +6,21 @@
 .DS_Store
 **/.DS_Store
 
-# dfx temporary files
-.dfx/
-
-# generated files
-**/declarations/
-
-# rust
-target/
-
-# frontend code
-node_modules/
-dist/
-.svelte-kit/
-
 # environment variables
 .env
+
+# icp-cli local cache (safe to delete, rebuilt on next build/deploy)
+.icp/cache/
+# Do NOT ignore .icp/data/ - it stores mainnet canister ID mappings.
+
+# Nim and WASM build artifacts
+.nimcache/
+*.wasm
+*.wat
+wasi.wasm
+
+# Node.js / frontend artifacts
+node_modules/
+dist/
+dist-ssr/
+*.local

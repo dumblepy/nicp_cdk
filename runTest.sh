@@ -2,16 +2,27 @@
 set -euo pipefail
 set -x
 
-# Set TERM to prevent dfx color output errors in CI/test environments
-# export TERM=xterm-256color
+cleanup_icp_state() {
+  while IFS= read -r -d '' manifest; do
+    project_dir="$(dirname "$manifest")"
+    (cd "$project_dir" && icp network stop >/dev/null 2>&1) || true
+  done < <(find /application/examples -name icp.yaml -print0)
 
-# Run make to start dfx in background
+  find /application/examples -type d -name .icp -exec rm -rf {} +
+}
+
+free_icp_gateway_port() {
+  pkill -f 'icp-cli-network-launcher .*--gateway-port 8000' >/dev/null 2>&1 || true
+}
+
+trap cleanup_icp_state EXIT
+
+nimble uninstall nicp_cdk -iy >/dev/null 2>&1 || true
 nimble install -y
-ndfx cHeaders
-dfx stop
-rm -rf /application/examples/*/.dfx
-dfx start --clean --background --host 0.0.0.0:4943 --domain localhost --domain 0.0.0.0
-dfx ping
+
+free_icp_gateway_port
+cleanup_icp_state
+
 cd /application/solidity
 forge install
 cd /application/solidity/script/Counter

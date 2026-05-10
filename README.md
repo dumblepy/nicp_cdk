@@ -101,14 +101,14 @@ curl https://nim-lang.org/choosenim/init.sh -sSf | sh
 nimble install https://github.com/itsumura-h/nicp_cdk
 ```
 
-Now you can use the `ndfx` command.
+Now you can use the `nicp` command.
 
 ## Create a new project
 
 ### Download c headers
 
 ```sh
-ndfx c_headers
+nicp c_headers
 ```
 `/root/.ic-c-headers` will be created.
 
@@ -116,20 +116,28 @@ ndfx c_headers
 ### Create a new project
 
 ```sh
-ndfx new hello
+nicp new hello
 cd hello
 ```
 
+Use `nicp new hello none` if you want a backend-only project.
+
 > [!WARNING]  
-> Check the `hello/src/hello_backend/config.nims` file:  
+> Check the `hello/backend/config.nims` file:  
 > - Is the `ic wasi polyfill path` correct?  
 > - Is the `WASI SDK sysroot` correct?  
 
 ### Run a local network and deploy
 
 ```sh
-dfx stop && dfx start --clean --background --host 0.0.0.0:4943
-dfx deploy
+icp network start -d
+icp deploy
+```
+
+If you want to call the backend directly, use:
+
+```sh
+icp canister call backend greet '("Internet Computer")'
 ```
 
 ## Stable memory

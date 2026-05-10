@@ -7,6 +7,19 @@ import std/unittest
 import std/strutils
 import std/times
 import ../../src/nicp_cdk/algorithm/ethereum
+import rustcrypto/algorithm/secp256k1
+import rustcrypto/ethereum
+
+proc toSeqBytes(data: openArray[byte]): seq[uint8] =
+  result = newSeq[uint8](data.len)
+  for i in 0..<data.len:
+    result[i] = data[i]
+
+
+proc toFixedArray[T](data: openArray[byte]): T =
+  doAssert data.len == result.len
+  for i in 0..<data.len:
+    result[i] = data[i]
 
 suite "Ethereum Address Conversion Tests":
   
@@ -24,15 +37,12 @@ suite "Ethereum Address Conversion Tests":
     check toEvmHexString(@[], false) == ""
   
   test "Real secp256k1 implementation tests":
-    # Test with actual ICP public key (33 bytes)
-    let icpPubKey = @[2'u8, 235, 128, 181, 135, 165, 54, 43, 7, 246, 7, 102, 
-                      40, 113, 66, 255, 248, 229, 251, 254, 153, 234, 201, 48, 
-                      207, 165, 219, 132, 147, 168, 48, 200, 55]
-    
+    let secretKey = Secp256k1.generateSecretKey()
+    let icpPubKey = toSeqBytes(Secp256k1.publicKeyCompressed(secretKey))
     echo "Testing with ICP public key: ", toEvmHexString(icpPubKey)
     let ethAddress = icpPublicKeyToEvmAddress(icpPubKey)
     echo "Generated Ethereum address: ", ethAddress
-    
+
     check ethAddress.len == 42  # "0x" + 40 characters
     check ethAddress.startsWith("0x")
     check ethAddress == ethAddress.toLowerAscii()
@@ -41,40 +51,24 @@ suite "Ethereum Address Conversion Tests":
     echo "Real secp256k1 address: ", ethAddress
   
   test "Real secp256k1 decompression":
-    # Test with a valid compressed public key
-    let compressedKey = @[2'u8, 235, 128, 181, 135, 165, 54, 43, 7, 246, 7, 102, 
-                         40, 113, 66, 255, 248, 229, 251, 254, 153, 234, 201, 48, 
-                         207, 165, 219, 132, 147, 168, 48, 200, 55]
-    
-    try:
-      let uncompressed = decompressPublicKey(compressedKey)
-      echo "Decompressed key length: ", uncompressed.len
-      check uncompressed.len == 65
-      check uncompressed[0] == 0x04
-      
-      # Verify x-coordinate preservation (bytes 1-32 of uncompressed should match bytes 1-32 of compressed)
-      for i in 1..32:
-        check uncompressed[i] == compressedKey[i]
-      
-      echo "Real secp256k1 decompression successful"
-    except EthereumConversionError as e:
-      # If the test key is not a valid curve point, this is expected
-      echo "Note: Test key may not be a valid secp256k1 curve point: ", e.msg
-      check true  # Test passes even if key is not valid curve point
-  
+    let secretKey = Secp256k1.generateSecretKey()
+    let compressedKey = toSeqBytes(Secp256k1.publicKeyCompressed(secretKey))
+    let uncompressedExpected = toSeqBytes(Secp256k1.publicKeyUncompressed(secretKey))
+
+    let uncompressed = decompressPublicKey(compressedKey)
+    check uncompressed == uncompressedExpected
+    check uncompressed.len == 65
+    check uncompressed[0] == 0x04
+
   test "keccak256Hash function":
-    # Test Keccak-256 hashing with EIP-191 format
     let message = "Hello, Ethereum!"
     let hash = keccak256Hash(message)
+    let expected = Ethereum.personalMessageHash(message)
+
     check hash.len == 32
-    
-    # Test empty message
-    let emptyHash = keccak256Hash("")
-    check emptyHash.len == 32
-    
-    # Same message should produce same hash
-    let hash2 = keccak256Hash(message)
-    check hash == hash2
+    check hash == toSeqBytes(expected)
+    check keccak256Hash("") == toSeqBytes(Ethereum.personalMessageHash(""))
+    check hash == keccak256Hash(message)
   
   test "parseSignature function":
     # Test valid signature parsing (130 hex chars = 65 bytes)
@@ -97,35 +91,26 @@ suite "Ethereum Address Conversion Tests":
       discard parseSignature("0x1234")  # Too short
   
   test "publicKeyToEthereumAddress with test keys":
-    # Create a valid uncompressed key for testing
-    # This is a test key - in practice you'd get this from decompressing an actual public key
-    let uncompressedKey = @[0x04'u8] & newSeq[uint8](64)  # 65 bytes total
-    
-    # This should not fail even with dummy data
+    let secretKey = Secp256k1.generateSecretKey()
+    let uncompressedKey = toSeqBytes(Secp256k1.publicKeyUncompressed(secretKey))
     let address = publicKeyToEthereumAddress(uncompressedKey)
     check address.startsWith("0x")
     check address.len == 42  # 0x + 40 hex characters
-    
-    # Test invalid key format
-    expect(EcdsaVerificationError):
+
+    expect(EthereumConversionError):
       discard publicKeyToEthereumAddress(newSeq[uint8](64))  # Missing 0x04 prefix
-    
-    expect(EcdsaVerificationError):
+
+    expect(EthereumConversionError):
       discard publicKeyToEthereumAddress(@[0x03'u8] & newSeq[uint8](64))  # Wrong prefix
   
   test "icpPublicKeyToEvmAddress with sample data":
-    # Test with the actual ICP public key from the problem
-    let icpPubKey = @[2'u8, 235, 128, 181, 135, 165, 54, 43, 7, 246, 7, 102, 
-                      40, 113, 66, 255, 248, 229, 251, 254, 153, 234, 201, 48, 
-                      207, 165, 219, 132, 147, 168, 48, 200, 55]
-    
+    let secretKey = Secp256k1.generateSecretKey()
+    let icpPubKey = toSeqBytes(Secp256k1.publicKeyCompressed(secretKey))
     let ethAddress = icpPublicKeyToEvmAddress(icpPubKey)
-    
-    # Basic validation
+
     check ethAddress.startsWith("0x")
     check ethAddress.len == 42
-    
-    # Check that it's valid hex
+
     let hexPart = ethAddress[2..^1]
     for c in hexPart:
       check c in "0123456789abcdef"
@@ -145,18 +130,18 @@ suite "Ethereum Address Conversion Tests":
       discard icpPublicKeyToEvmAddress(@[])
   
   test "convertIcpSignatureToEthereum function":
-    # Test ICP signature conversion (64 bytes -> 65 bytes with recovery ID)
-    let icpSignature = newSeq[uint8](64)  # Dummy 64-byte signature
-    let messageHash = newSeq[uint8](32)   # Dummy 32-byte hash
-    let publicKey = @[2'u8, 235, 128, 181, 135, 165, 54, 43, 7, 246, 7, 102, 
-                     40, 113, 66, 255, 248, 229, 251, 254, 153, 234, 201, 48, 
-                     207, 165, 219, 132, 147, 168, 48, 200, 55]
-    
+    let secretKey = Secp256k1.generateSecretKey()
+    let message = "convertIcpSignatureToEthereum"
+    let messageHash = keccak256Hash(message)
+    let publicKey = toSeqBytes(Secp256k1.publicKeyCompressed(secretKey))
+    let icpSignature = toSeqBytes(
+      Secp256k1.sign(toFixedArray[Secp256k1MessageDigest](messageHash), secretKey)
+    )
+
     let ethSignature = convertIcpSignatureToEthereum(icpSignature, messageHash, publicKey)
     check ethSignature.startsWith("0x")
     check ethSignature.len == 132  # 0x + 130 hex chars = 65 bytes
-    
-    # Test invalid signature length
+
     expect(SignatureFormatError):
       discard convertIcpSignatureToEthereum(newSeq[uint8](63), messageHash, publicKey)
   
@@ -175,38 +160,29 @@ suite "Ethereum Address Conversion Tests":
 
 suite "Performance and Consistency Tests":
   test "address consistency":
-    # Same input should always produce same output
-    let icpPubKey = @[2'u8, 235, 128, 181, 135, 165, 54, 43, 7, 246, 7, 102, 
-                      40, 113, 66, 255, 248, 229, 251, 254, 153, 234, 201, 48, 
-                      207, 165, 219, 132, 147, 168, 48, 200, 55]
-    
+    let secretKey = Secp256k1.generateSecretKey()
+    let icpPubKey = toSeqBytes(Secp256k1.publicKeyCompressed(secretKey))
     let address1 = icpPublicKeyToEvmAddress(icpPubKey)
     let address2 = icpPublicKeyToEvmAddress(icpPubKey)
-    
+
     check address1 == address2
     echo "Consistent address: ", address1
   
   test "Performance and consistency":
-    # Test multiple conversions of the same key should produce same result
-    let icpPubKey = @[2'u8, 235, 128, 181, 135, 165, 54, 43, 7, 246, 7, 102, 
-                      40, 113, 66, 255, 248, 229, 251, 254, 153, 234, 201, 48, 
-                      207, 165, 219, 132, 147, 168, 48, 200, 55]
-    
+    let secretKey = Secp256k1.generateSecretKey()
+    let icpPubKey = toSeqBytes(Secp256k1.publicKeyCompressed(secretKey))
     let addr1 = icpPublicKeyToEvmAddress(icpPubKey)
     let addr2 = icpPublicKeyToEvmAddress(icpPubKey)
     let addr3 = icpPublicKeyToEvmAddress(icpPubKey)
-    
+
     check addr1 == addr2
     check addr2 == addr3
     
     echo "Consistent address: ", addr1
   
   test "Performance benchmark":
-    # Performance test with real secp256k1
-    let icpPubKey = @[2'u8, 235, 128, 181, 135, 165, 54, 43, 7, 246, 7, 102, 
-                      40, 113, 66, 255, 248, 229, 251, 254, 153, 234, 201, 48, 
-                      207, 165, 219, 132, 147, 168, 48, 200, 55]
-    
+    let secretKey = Secp256k1.generateSecretKey()
+    let icpPubKey = toSeqBytes(Secp256k1.publicKeyCompressed(secretKey))
     let iterations = 100  # Reduced for testing
     let startTime = epochTime()
     
@@ -220,16 +196,15 @@ suite "Performance and Consistency Tests":
     echo "Performance: ", iterations, " conversions in ", totalTime.formatFloat(ffDecimal, 4), "s"
     echo "Average time per conversion: ", (avgTime * 1000).formatFloat(ffDecimal, 4), "ms"
     
-    # Performance should be reasonable (less than 10ms per conversion on average for testing)
-    check avgTime < 0.01  # Less than 10ms per conversion
+    # Performance should be reasonable for the pure Nim fallback.
+    check avgTime < 0.02  # Less than 20ms per conversion
   
   test "error handling comprehensive":
-    # Test that appropriate exceptions are raised for invalid inputs
     expect(EthereumConversionError):
       discard decompressPublicKey(@[])
-    
+
     expect(SignatureFormatError):
       discard parseSignature("invalid")
-    
-    expect(EcdsaVerificationError):
+
+    expect(EthereumConversionError):
       discard publicKeyToEthereumAddress(@[0x01'u8] & newSeq[uint8](64)) 

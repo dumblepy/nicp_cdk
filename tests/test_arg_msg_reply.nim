@@ -7,32 +7,35 @@ import unittest
 import std/osproc
 import std/strutils
 import std/os
+import icp_network
 
 const 
-  DFX_PATH = "/root/.local/share/dfx/bin/dfx"
+  ICP_PATH = "icp"
   ARG_MSG_REPLY_DIR = "examples/arg_msg_reply"
 
 # 共通のヘルパープロシージャ
 proc callCanisterFunction(functionName: string, args: string = ""): string =
+  ensureIcpNetworkStarted(ARG_MSG_REPLY_DIR)
   let originalDir = getCurrentDir()
   try:
     setCurrentDir(ARG_MSG_REPLY_DIR)
     let command = if args == "":
-      DFX_PATH & " canister call arg_msg_reply_backend " & functionName
+      ICP_PATH & " canister call backend " & functionName & " '()'"
     else:
-      DFX_PATH & " canister call arg_msg_reply_backend " & functionName & " '" & args & "'"
+      ICP_PATH & " canister call backend " & functionName & " '" & args & "'"
     return execProcess(command)
   finally:
     setCurrentDir(originalDir)
 
 
 proc deploy() =
+  ensureIcpNetworkStarted(ARG_MSG_REPLY_DIR)
   echo "Deploying canister..."
   let originalDir = getCurrentDir()
   try:
     setCurrentDir(ARG_MSG_REPLY_DIR)
     echo "Changed to directory: ", getCurrentDir()
-    let deployResult = execProcess(DFX_PATH & " deploy -y")
+    let deployResult = execProcess(ICP_PATH & " deploy -y")
     echo "Deploy output: ", deployResult
     # deployが成功した場合を確認
     check deployResult.contains("Deployed") or deployResult.contains("Creating") or 
@@ -533,19 +536,19 @@ suite "Blob Type Tests":
 
   test "Test blobArg function with ASCII string":
     echo "Testing blobArg function with ASCII string..."
-    let callResult = callCanisterFunction("blobArg", "blob \"Hello\"")
+    let callResult = callCanisterFunction("blobArg", "(blob \"Hello\")")
     echo "Call output: ", callResult
     check callResult.contains("(blob \"Hello\")")
 
   test "Test blobArg function with binary data":
     echo "Testing blobArg function with binary data..."
-    let callResult = callCanisterFunction("blobArg", "blob \"\\00\\01\\02\\FF\"")
+    let callResult = callCanisterFunction("blobArg", "(blob \"\\00\\01\\02\\FF\")")
     echo "Call output: ", callResult
     check callResult.contains("(blob \"\\00\\01\\02\\ff\")")
 
   test "Test blobArg function with empty blob":
     echo "Testing blobArg function with empty blob..."
-    let callResult = callCanisterFunction("blobArg", "blob \"\"")
+    let callResult = callCanisterFunction("blobArg", "(blob \"\")")
     echo "Call output: ", callResult
     check callResult.contains("(blob \"\")")
 
@@ -593,13 +596,13 @@ suite "Variant Type Tests":
 
   test "Test variantArg function with success":
     echo "Testing variantArg function with success..."
-    let callResult = callCanisterFunction("variantArg", "variant { success = \"ok\" }")
+    let callResult = callCanisterFunction("variantArg", "(variant { success = \"ok\" })")
     echo "Call output: ", callResult
     check callResult.contains("(variant { success = \"ok\" })")
 
   test "Test variantArg function with error":
     echo "Testing variantArg function with error..."
-    let callResult = callCanisterFunction("variantArg", "variant { error = \"something went wrong\" }")
+    let callResult = callCanisterFunction("variantArg", "(variant { error = \"something went wrong\" })")
     echo "Call output: ", callResult
     check callResult.contains("(variant { error = \"something went wrong\" })")
 

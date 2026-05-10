@@ -6,6 +6,8 @@
 testresults
 nimcache
 
+.icp
+.mops
 *.wasm
 *.wat
 .env

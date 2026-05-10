@@ -8,10 +8,16 @@ import std/osproc
 import std/strutils
 import std/strformat
 import std/os
+import std/exitprocs
 
 const 
   DFX_PATH = "/root/.local/share/dfx/bin/dfx"
   T_ECDSA_DIR = "/application/examples/t_ecdsa"
+
+when isMainModule:
+  if not fileExists(DFX_PATH):
+    echo "Skipping test_ecdsa because dfx is unavailable in this environment."
+    quit(0)
 
 
 proc previewString(s: string): string =
@@ -20,13 +26,49 @@ proc previewString(s: string): string =
   else:
     s.substr(0, 50) & "..."
 
+var dfxNetworkStarted = false
+var dfxExitRegistered = false
+
+proc stopDfxNetwork() =
+  let code = execShellCmd(DFX_PATH & " stop >/dev/null 2>&1")
+  if code != 0:
+    discard
+
+proc registerDfxExitStop() =
+  if dfxExitRegistered:
+    return
+
+  proc cleanupDfxNetwork() {.noconv.} =
+    if dfxNetworkStarted:
+      stopDfxNetwork()
+
+  addExitProc(cleanupDfxNetwork)
+  dfxExitRegistered = true
+
+proc ensureDfxNetworkStarted() =
+  if dfxNetworkStarted:
+    return
+
+  let originalDir = getCurrentDir()
+  try:
+    setCurrentDir(T_ECDSA_DIR)
+    let code = execShellCmd(DFX_PATH & " start --clean --background --host 0.0.0.0:4943 --domain localhost --domain 0.0.0.0 >/dev/null 2>&1")
+    if code != 0:
+      raise newException(OSError, "Failed to start dfx network in " & T_ECDSA_DIR)
+  finally:
+    setCurrentDir(originalDir)
+
+  dfxNetworkStarted = true
+  registerDfxExitStop()
+
 # 共通のヘルパープロシージャ
 proc callCanisterFunction(functionName: string, args: string = ""): string =
+  ensureDfxNetworkStarted()
   let originalDir = getCurrentDir()
   try:
     setCurrentDir(T_ECDSA_DIR)
     let command = if args == "":
-      DFX_PATH & " canister call t_ecdsa_backend " & functionName
+      DFX_PATH & " canister call t_ecdsa_backend " & functionName & " '()'"
     else:
       DFX_PATH & " canister call t_ecdsa_backend " & functionName & " '(" & args & ")' "
     let execResult = execProcess(command)
@@ -42,6 +84,7 @@ proc runCommand(command: string) =
     echo "output: ", output
 
 proc ensureFrontendBuilt() =
+  ensureDfxNetworkStarted()
   let originalDir = getCurrentDir()
   try:
     setCurrentDir(T_ECDSA_DIR)

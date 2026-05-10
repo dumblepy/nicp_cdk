@@ -1,0 +1,198 @@
+---
+description: 87-dfx-to-icp-cliブランチでの開発時に読み込む
+alwaysApply: false
+---
+87-dfx-to-icp-cli
+===
+
+このブランチで実装することは以下の通りです。
+- ICP Management Canister が生成した secp256k1 ECDSA 署名を単体テストで検証するための暗号依存を、`nimcrypto` と `secp256k1` から `rustcrypto` (`itsumura-h/nim-rustcrypto`) へ置き換える。
+- `nimcrypto/keccak` で行っている Keccak-256 ハッシュ処理を `rustcrypto/algorithm/sha3` の Keccak-256 API へ移行する。
+- `secp256k1` で行っている鍵パース、圧縮公開鍵の展開、署名検証、recoverable signature による公開鍵復元を `rustcrypto/algorithm/secp256k1` と必要に応じて `rustcrypto/ethereum` へ移行する。
+- `nicp_cdk.nimble` から `nimcrypto` と `secp256k1` の依存を削除し、`rustcrypto` の GitHub subdir 依存を追加する。
+- 既存の公開API (`keccak256Hash`, `verifySignatureWithSecp256k1`, `icpPublicKeyToEvmAddress`, `convertIcpSignatureToEthereum` など) は、呼び出し側の変更を最小にするため原則維持する。
+
+## 進捗
+- [x] 既存のブランチルールとプロジェクトルールを確認
+- [x] 現在の依存箇所を調査
+- [x] `nim-rustcrypto` の README / secp256k1 / Keccak / Ethereum / FFI ドキュメントを確認
+- [x] 実装方針と設計をこのブランチルールへ記録
+- [x] `nicp_cdk.nimble` の暗号依存を `rustcrypto` に置換
+- [x] `src/nicp_cdk/algorithm/ecdsa.nim` を `rustcrypto` ベースへ移行
+- [x] `src/nicp_cdk/algorithm/ethereum.nim` を `rustcrypto` ベースへ移行
+- [x] `tests/test_sign_verify.nim` の直接依存を `rustcrypto` へ移行
+- [x] `tests/algorithm/test_eth_address.nim` の期待値とエラー系を移行後APIに合わせて確認
+- [x] `rg "nimcrypto|import secp256k1|requires \"secp256k1|requires \"nimcrypto"` で旧依存が残っていないことを確認
+- [x] `nimble test` または対象テストを実行して回帰確認
+
+## 参考資料
+- `nim-rustcrypto`: https://github.com/itsumura-h/nim-rustcrypto
+- `nim-rustcrypto` README: https://github.com/itsumura-h/nim-rustcrypto/blob/main/README.md
+- `nim-rustcrypto` secp256k1 ECDSA: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/secp256k1-ecdsa.md
+- `nim-rustcrypto` secp256k1 DER: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/secp256k1-ecdsa-der.md
+- `nim-rustcrypto` SHA3 / Keccak: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/sha3-keccak.md
+- `nim-rustcrypto` Ethereum helpers: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/ethereum.md
+- `nim-rustcrypto` low-level FFI: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/ffi-low-level.md
+- 既存依存定義: `nicp_cdk.nimble`
+- 既存ECDSA実装: `src/nicp_cdk/algorithm/ecdsa.nim`
+- 既存Ethereum実装: `src/nicp_cdk/algorithm/ethereum.nim`
+- 既存単体テスト: `tests/test_sign_verify.nim`, `tests/algorithm/test_eth_address.nim`
+- ECDSAサンプル利用箇所: `examples/t_ecdsa/src/t_ecdsa_backend/usecase.nim`
+
+## 調査結果・設計まとめ
+
+### 背景
+
+このプロジェクトでは、ICP の `sign_with_ecdsa` が返す secp256k1 ECDSA 署名を、Nim の単体テストやサンプルユースケース内で検証している。現状は `nimcrypto` を Keccak-256 に、`secp256k1` を署名検証・公開鍵展開・公開鍵復元に使っている。
+
+このブランチでは、暗号処理を `nim-rustcrypto` に集約する。`nim-rustcrypto` は RustCrypto を小さな Rust FFI static library 経由で Nim から使うライブラリで、README 上では SHA-256 / SHA3-256 / Keccak-256、secp256k1 ECDSA、recoverable ECDSA、Ethereum helper を提供している。Linux x86_64 では `nimble add` / `nimble install` 時に prebuilt static archive を取得するため、通常利用では Rust toolchain を必須にしない設計になっている。
+
+### 依存変更方針
+
+`nicp_cdk.nimble` は以下の方針で変更する。
+
+```nim
+# 削除
+requires "nimcrypto >= 0.6.3"
+requires "secp256k1 >= 0.5.2"
+
+# 追加
+requires "https://github.com/itsumura-h/nim-rustcrypto?subdir=src/nim-rustcrypto"
+```
+
+バージョン固定が必要な場合は、実装時点で利用できる tag を確認し、`#v0.1.1` のように ref を固定することを検討する。2026-05-10 調査時点では GitHub 上の最新 release は `v0.1.1`。
+
+### 既存の旧依存箇所
+
+旧依存の実体は以下に集中している。
+
+- `src/nicp_cdk/algorithm/ecdsa.nim`
+  - `nimcrypto/keccak`
+  - `secp256k1`
+  - `keccak256Hash`
+  - `validateSignatureWithSecp256k1`
+  - `verifySignatureWithSecp256k1`
+- `src/nicp_cdk/algorithm/ethereum.nim`
+  - `nimcrypto/keccak`
+  - `secp256k1`
+  - `decompressPublicKey`
+  - `recoverPublicKeyFromSignature`
+  - `publicKeyToEthereumAddress`
+  - `verifyEthereumSignatureWithAddress`
+  - `convertIcpSignatureToEthereum`
+- `tests/test_sign_verify.nim`
+  - テスト内で `secp256k1` と `nimcrypto/keccak` を直接 import
+
+`EcdsaCurve.secp256k1` のような Candid variant 名は暗号ライブラリ依存ではないため、置換対象に含めない。
+
+### 設計方針
+
+#### 1. 公開API互換を優先する
+
+サンプルやテストの呼び出し側を広く書き換えないため、既存の公開関数名と戻り値は原則維持する。
+
+- `ecdsa.keccak256Hash(message: string): seq[uint8]`
+- `ecdsa.validateSignatureWithSecp256k1(messageHash, signatureBytes, publicKeyBytes): bool`
+- `ecdsa.verifySignatureWithSecp256k1(message, signatureHex, publicKeyHex): bool`
+- `ethereum.decompressPublicKey(compressedKey): seq[uint8]`
+- `ethereum.keccak256Hash(data: string): seq[uint8]`
+- `ethereum.recoverPublicKeyFromSignature(messageHash, signatureHex, recoveryId): seq[uint8]`
+- `ethereum.publicKeyToEthereumAddress(pubKey): string`
+- `ethereum.icpPublicKeyToEvmAddress(icpPublicKey): string`
+- `ethereum.verifyEthereumSignatureWithAddress(ethereumAddress, message, signatureHex): bool`
+- `ethereum.convertIcpSignatureToEthereum(icpSignature, messageHash, publicKey): string`
+
+内部実装だけを `rustcrypto` に置き換える。関数名の `Secp256k1` は概念名として残してよいが、コメント内の「secp256k1 library」は「RustCrypto secp256k1 implementation」に更新する。
+
+#### 2. Keccak-256 は `rustcrypto/algorithm/sha3` に集約する
+
+`nimcrypto/keccak` の手動 context 操作をやめ、`rustcrypto/algorithm/sha3` の `keccak256` / `keccak256Hex` を使う。
+
+- `ecdsa.keccak256Hash` はプレーンメッセージをそのまま Keccak-256 する。
+- `ethereum.keccak256Hash` は現行どおり EIP-191 personal message (`"\x19Ethereum Signed Message:\n" & $len & message`) を組み立ててから Keccak-256 する。
+- Ethereum address 生成では、uncompressed public key の先頭 `0x04` を除いた 64 bytes を Keccak-256 し、末尾 20 bytes を address とする現行仕様を維持する。
+
+#### 3. secp256k1 の型変換を小さな内部ヘルパーに閉じ込める
+
+`nim-rustcrypto` の secp256k1 API は固定長型を使うため、既存の `seq[uint8]` / hex string から以下の型へ変換する内部ヘルパーを設ける。
+
+- 32 bytes digest -> `Secp256k1MessageDigest`
+- 64 bytes compact signature -> `Secp256k1Signature`
+- 65 bytes recoverable signature -> `Secp256k1RecoverableSignature`
+- 33 bytes compressed public key -> `Secp256k1CompressedPublicKey`
+- 65 bytes uncompressed public key -> `Secp256k1UncompressedPublicKey`
+
+変換は `rustcrypto/algorithm/common` の hex helper、または固定長 array へのコピーで行う。入力長が不正な場合は、既存の挙動に合わせて検証関数では `false` を返し、変換関数では既存の例外型 (`EthereumConversionError`, `SignatureFormatError`, `EcdsaVerificationError`) を投げる。
+
+#### 4. 署名検証は raw 32-byte digest API を使う
+
+ICP の `sign_with_ecdsa` は 32 bytes の `message_hash` に署名するため、検証も message string helper ではなく raw digest 版を使う。
+
+設計上の対応は以下。
+
+- `verifySignatureWithSecp256k1(message, signatureHex, publicKeyHex)`
+  - `message` を `ecdsa.keccak256Hash` で 32 bytes digest 化
+  - `signatureHex` を 64 bytes compact signature として解釈
+  - `publicKeyHex` は ICP public key の 33 bytes compressed SEC1 を想定
+  - `Secp256k1.verify(digest, compressedPubKey, signature)` を使う
+- `validateSignatureWithSecp256k1(messageHash, signatureBytes, publicKeyBytes)`
+  - `messageHash.len == 32`
+  - `signatureBytes.len == 64`
+  - `publicKeyBytes.len == 33` または `65`
+  - public key 長に応じて compressed / uncompressed overload を使う
+
+#### 5. Ethereum helper は高水準APIを優先し、足りない箇所のみ低水準APIを使う
+
+`nim-rustcrypto` には `rustcrypto/ethereum` があり、Keccak-256、uncompressed secp256k1 public key からの address 生成、EIP-191 personal message、recoverable ECDSA を提供している。
+
+移行時は以下の順に採用する。
+
+1. `Ethereum.address(uncompressedPubKey)` で `publicKeyToEthereumAddress` を置き換える。
+2. `Ethereum.keccak256` で address 用 Keccak-256 を置き換える。
+3. `Ethereum.verifyPersonalMessage` が既存の `verifyEthereumSignatureWithAddress` の仕様に合う場合は採用する。
+4. ICP 署名の `r+s` から `v` を探索する `convertIcpSignatureToEthereum` は、既存と同じく recovery id `0` / `1` を試して公開鍵一致を確認する。`rustcrypto/ethereum` だけで public key 比較まで完結しない場合は `rustcrypto/algorithm/secp256k1` の recoverable signature API を使う。
+
+`nim-rustcrypto` の Ethereum verify は wallet address による検証を主目的としているため、ICP public key と一致する recovery id を探す用途では低水準 secp256k1 API の利用を許容する。
+
+#### 6. 圧縮公開鍵の展開
+
+`decompressPublicKey` は 33 bytes compressed SEC1 public key を 65 bytes uncompressed SEC1 public key に変換する。`nim-rustcrypto` の `Secp256k1.publicKeyUncompressed` が secret key 由来のみの場合は、compressed public key から uncompressed public key へ変換できる API を確認する。
+
+もし高水準 wrapper が不足している場合の優先順位は以下。
+
+1. `rustcrypto/algorithm/secp256k1` に既存の compressed -> uncompressed wrapper があれば使用する。
+2. `rustcrypto/ethereum` の address helper が compressed input を受け付けないか確認し、受け付けるなら `icpPublicKeyToEvmAddress` は直接 helper 化する。ただし `decompressPublicKey` の公開APIは別途維持する。
+3. wrapper が存在しない場合は、`nim-rustcrypto` 側への wrapper 追加または低水準 FFI 追加が必要。現ブランチではできるだけ上流API追加を避け、既存公開APIで実現できる範囲を優先する。
+
+この点は実装前の確認事項として扱う。
+
+### テスト方針
+
+最小確認は以下。
+
+```sh
+nim c -r --skipUserCfg tests/test_sign_verify.nim
+nim c -r --skipUserCfg tests/algorithm/test_eth_address.nim
+nim c -r --skipUserCfg tests/management_canister/test_ecdsa.nim
+nimble test
+```
+
+`tests/management_canister/test_ecdsa.nim` は dfx availability に依存するため、環境に dfx がない場合は skip される想定。暗号置換の主確認は `tests/test_sign_verify.nim` と `tests/algorithm/test_eth_address.nim` で行う。
+
+追加・修正すべきテスト観点。
+
+- `keccak256Hash` が 32 bytes を返し、同一入力で決定的であること。
+- 既知 secret key / message digest / public key / signature の round trip sign-verify。
+- ICP 形式の 64 bytes compact signature を検証できること。
+- 33 bytes compressed public key から Ethereum address を導出できること。
+- 64 bytes ICP signature から `v=27/28` 付き Ethereum signature を生成できること。
+- 不正長 signature / digest / public key は既存の例外型または `false` に正しく落ちること。
+
+### リスクと確認事項
+
+- `nim-rustcrypto` の FFI static archive は README 上 Linux x86_64 対応とされている。CI や開発環境が Linux x86_64 以外を含む場合は追加対応が必要。
+- `decompressPublicKey` に相当する高水準 API の有無は実装前に確認する。なければ wrapper/FFI 追加が必要になる可能性がある。
+- `nim-rustcrypto` の recoverable signature API の recovery id 表現が `0/1` か Ethereum `27/28` かを実装時に確認する。既存実装では復元には `0/1`、Ethereum signature の出力には `27/28` を使っている。
+- `ecdsa.keccak256Hash` と `ethereum.keccak256Hash` は同名だが意味が異なる。前者は raw Keccak、後者は EIP-191 personal message Keccak なので、移行時に混同しない。
+- `nim-rustcrypto` の DER helper は今回の ICP signature 検証では原則不要。ICP Management Canister の signature は 64 bytes `r || s` として扱う。
+- `nim-rustcrypto` 側には compressed SEC1 公開鍵を 65 bytes uncompressed に変換する高水準 wrapper がなかったため、`decompressPublicKey` は pure Nim の secp256k1 フィールド演算で実装した。公開API は維持しつつ、`icpPublicKeyToEvmAddress` はこの内部実装に依存する。

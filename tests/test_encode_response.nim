@@ -7,44 +7,126 @@ import unittest
 import std/os
 import std/strutils
 import std/osproc
+import std/tables
+import icp_network
 import ../src/nicp_cdk/ic_types/candid_message/candid_decode
 import ../src/nicp_cdk/ic_types/candid_types
 import ../src/nicp_cdk/ic_types/type_transfer
 import ../src/nicp_cdk/request
-const DFX_PATH = "dfx"
+const ICP_PATH = "icp"
 const MOTOKO_DIR = "/application/examples/type_test/motoko"
 const NIM_DIR = "/application/examples/type_test/nim"
 
-# 共通のヘルパープロシージャ
-proc callMotokoCanisterFunction(functionName: string, args: string = ""): string =
+var motokoResults = initTable[string, string]()
+var nimResults = initTable[string, string]()
+
+const COMPARE_FUNCTIONS = [
+  "responseNull",
+  "responseEmpty",
+  "boolFunc",
+  "intFunc",
+  "int8Func",
+  "int16Func",
+  "int32Func",
+  "int64Func",
+  "natFunc",
+  "nat8Func",
+  "nat16Func",
+  "nat32Func",
+  "nat64Func",
+  "floatFunc",
+  "textFunc",
+  "blobFunc",
+  "vecNatFunc",
+  "vecTextFunc",
+  "vecBoolFunc",
+  "vecIntFunc",
+  "vecVecNatFunc",
+  "vecVecTextFunc",
+  "vecVecBoolFunc",
+  "vecVecIntFunc",
+  "optTextSome",
+  "optTextNone",
+  "optIntSome",
+  "optIntNone",
+  "optNatSome",
+  "optNatNone",
+  "optFloatSome",
+  "optFloatNone",
+  "optBoolSome",
+  "optBoolNone",
+  "recordSimple",
+  "recordNested",
+  "principalFunc",
+  "principalAnonymous",
+  "principalCanister",
+  "variantColorRed",
+  "variantColorGreen",
+  "variantColorBlue",
+  "funcRefTextQuery",
+]
+
+proc hexToBytes(hexValue: string): seq[byte] =
+  var cleaned = hexValue.strip().replace(" ", "").replace("\n", "").replace("\t", "")
+  if cleaned.len >= 2 and cleaned[0] == '0' and (cleaned[1] == 'x' or cleaned[1] == 'X'):
+    cleaned = cleaned[2..^1]
+  if cleaned.len == 0:
+    return @[]
+  doAssert cleaned.len mod 2 == 0
+  result = newSeq[byte](cleaned.len div 2)
+  for i in 0 ..< result.len:
+    let start = i * 2
+    result[i] = byte(parseHexInt(cleaned[start ..< start + 2]))
+
+proc extractHexPayload(output: string): string =
+  for line in output.splitLines:
+    let cleaned = line.strip().replace(" ", "")
+    if cleaned.len > 0:
+      var isHex = true
+      for ch in cleaned:
+        if not (ch in {'0'..'9', 'a'..'f', 'A'..'F'}):
+          isHex = false
+          break
+      if isHex:
+        result = cleaned
+  if result.len == 0:
+    result = output.strip().replace(" ", "")
+
+proc runCommand(command: string) =
+  let (output, code) = execCmdEx(command)
+  check code == 0
+  if code != 0:
+    echo "command: ", command
+    echo "output: ", output
+
+proc callProjectCanisterFunction(projectDir, functionName: string, args: string = ""): string =
   let originalDir = getCurrentDir()
   try:
-    setCurrentDir(MOTOKO_DIR)
+    setCurrentDir(projectDir)
     let command = if args == "":
-      DFX_PATH & " canister call motoko_backend " & functionName & " --output raw"
+      ICP_PATH & " canister call backend " & functionName & " '()' --output hex"
     else:
-      DFX_PATH & " canister call motoko_backend " & functionName & " '" & args & "'" & " --output raw"
-    return execProcess(command)
+      ICP_PATH & " canister call backend " & functionName & " '" & args & "'" & " --output hex"
+    return extractHexPayload(execProcess(command))
   finally:
     setCurrentDir(originalDir)
 
 proc callNimCanisterFunction(functionName: string, args: string = ""): string =
-  let originalDir = getCurrentDir()
-  try:
-    setCurrentDir(NIM_DIR)
-    let command = if args == "":
-      DFX_PATH & " canister call nim_backend " & functionName & " --output raw"
-    else:
-      DFX_PATH & " canister call nim_backend " & functionName & " '" & args & "'" & " --output raw"
-    return execProcess(command)
-  finally:
-    setCurrentDir(originalDir)
+  if args == "" and functionName in nimResults:
+    return nimResults[functionName]
+
+  return callProjectCanisterFunction(NIM_DIR, functionName, args)
+
+
+proc callMotokoCanisterFunction(functionName: string, args: string = ""): string =
+  if args == "" and functionName in motokoResults:
+    return motokoResults[functionName]
+
+  return callProjectCanisterFunction(MOTOKO_DIR, functionName, args)
 
 
 proc rowTest(fucName:string):bool =
-  let motokoResult = callMotokoCanisterFunction(fucName)
-  let nimResult = callNimCanisterFunction(fucName)
-  return motokoResult == nimResult
+  return motokoResults[fucName] == nimResults[fucName]
 
 
 proc deploy() =
@@ -53,19 +135,31 @@ proc deploy() =
   
   try:
     # Motokoキャニスターのデプロイ
+    ensureIcpNetworkStarted(MOTOKO_DIR)
     setCurrentDir(MOTOKO_DIR)
     echo "Changed to directory: ", getCurrentDir()
-    var deployResult = execProcess(DFX_PATH & " deploy -y")
+    runCommand("cd backend && mops install")
+    var deployResult = execProcess(ICP_PATH & " deploy -y")
     echo "Motoko deploy output: ", deployResult
     check deployResult.contains("Deployed") or deployResult.contains("Creating") or deployResult.contains("Installing") or deployResult.contains("backend")
-    
+
+    for functionName in COMPARE_FUNCTIONS:
+      motokoResults[functionName] = callProjectCanisterFunction(MOTOKO_DIR, functionName)
+
+    stopIcpNetwork(MOTOKO_DIR)
+
     # Nimキャニスターのデプロイ
-    setCurrentDir("../" & NIM_DIR.split('/')[^1])  # nimディレクトリに移動
+    ensureIcpNetworkStarted(NIM_DIR)
+    setCurrentDir(NIM_DIR)
     echo "Changed to directory: ", getCurrentDir()
-    deployResult = execProcess(DFX_PATH & " deploy -y")
+    deployResult = execProcess(ICP_PATH & " deploy -y")
     echo "Nim deploy output: ", deployResult
     check deployResult.contains("Deployed") or deployResult.contains("Creating") or deployResult.contains("Installing") or deployResult.contains("backend")
-    
+
+    for functionName in COMPARE_FUNCTIONS:
+      nimResults[functionName] = callProjectCanisterFunction(NIM_DIR, functionName)
+
+    stopIcpNetwork(NIM_DIR)
   finally:
     setCurrentDir(originalDir)
     echo "Changed back to directory: ", getCurrentDir()
@@ -200,14 +294,14 @@ suite "Candid compare with Motoko tests":
   test "variant color red":
     let motokoResult = callMotokoCanisterFunction("variantColorRed")
     echo "Motoko result: ", motokoResult
-    let motokoBytes = motokoResult.toBytes()
+    let motokoBytes = hexToBytes(motokoResult)
     let motokoDecoded = decodeCandidMessage(motokoBytes)
     let motokoRequest = newMockRequest(motokoDecoded.values)
     let motokoResponse = motokoRequest.getEnum(0, Color)
     
     let nimResult = callNimCanisterFunction("variantColorRed")
     echo "Nim result:    ", nimResult
-    let nimBytes = nimResult.toBytes()
+    let nimBytes = hexToBytes(nimResult)
     let nimDecoded = decodeCandidMessage(nimBytes)
     let nimRequest = newMockRequest(nimDecoded.values)
     let nimResponse = nimRequest.getEnum(0, Color)
@@ -218,14 +312,14 @@ suite "Candid compare with Motoko tests":
   test "variant color green":
     let motokoResult = callMotokoCanisterFunction("variantColorGreen")
     echo "Motoko result: ", motokoResult
-    let motokoBytes = motokoResult.toBytes()
+    let motokoBytes = hexToBytes(motokoResult)
     let motokoDecoded = decodeCandidMessage(motokoBytes)
     let motokoRequest = newMockRequest(motokoDecoded.values)
     let motokoResponse = motokoRequest.getEnum(0, Color)
     
     let nimResult = callNimCanisterFunction("variantColorGreen")
     echo "Nim result:    ", nimResult
-    let nimBytes = nimResult.toBytes()
+    let nimBytes = hexToBytes(nimResult)
     let nimDecoded = decodeCandidMessage(nimBytes)
     let nimRequest = newMockRequest(nimDecoded.values)
     let nimResponse = nimRequest.getEnum(0, Color)
@@ -236,14 +330,14 @@ suite "Candid compare with Motoko tests":
   test "variant color blue":
     let motokoResult = callMotokoCanisterFunction("variantColorBlue")
     echo "Motoko result: ", motokoResult
-    let motokoBytes = motokoResult.toBytes()
+    let motokoBytes = hexToBytes(motokoResult)
     let motokoDecoded = decodeCandidMessage(motokoBytes)
     let motokoRequest = newMockRequest(motokoDecoded.values)
     let motokoResponse = motokoRequest.getEnum(0, Color)
 
     let nimResult = callNimCanisterFunction("variantColorBlue")
     echo "Nim result:    ", nimResult
-    let nimBytes = nimResult.toBytes()
+    let nimBytes = hexToBytes(nimResult)
     let nimDecoded = decodeCandidMessage(nimBytes)
     let nimRequest = newMockRequest(nimDecoded.values)
     let nimResponse = nimRequest.getEnum(0, Color)

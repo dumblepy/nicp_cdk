@@ -1,11 +1,11 @@
-FROM ubuntu:24.04 AS wasi-tools
+FROM ubuntu:26.04 AS wasi-tools
 
 # prevent timezone dialogue
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt update && \
-    apt upgrade -y
-RUN apt install -y \
+    apt upgrade -y && \
+    apt install -y \
         build-essential \
         curl \
         git
@@ -31,16 +31,18 @@ RUN curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dfinity/ic-wasm/rel
 
 
 # ================================================================================
-FROM ubuntu:24.04 AS app
+FROM ubuntu:26.04 AS app
 
 # prevent timezone dialogue
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt update && \
-    apt upgrade -y
-RUN apt install -y \
+    apt upgrade -y && \
+    apt install -y \
         build-essential \
         libunwind-dev \
+        # for icp-cli
+        libdbus-1-dev \
         xz-utils \
         ca-certificates \
         vim \
@@ -57,15 +59,11 @@ RUN apt install -y lldb lld gcc-multilib
 RUN apt autoremove -y
 
 # icp
-# https://github.com/dfinity/sdk/releases/latest
+# https://github.com/dfinity/icp-cli
 WORKDIR /root
-RUN curl -OL https://internetcomputer.org/install.sh
-RUN chmod +x install.sh
-RUN DFXVM_INIT_YES=yes ./install.sh
-RUN rm -f install.sh
-ENV PATH $PATH:/root/.local/share/dfx/bin
-RUN ls -la /root/.local/share/dfx/bin
-RUN dfx --version
+RUN curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dfinity/icp-cli/releases/latest/download/icp-cli-installer.sh | sh
+ENV PATH=$PATH:/root/.cargo/bin
+RUN icp --version
 
 # wasi
 # reference: https://github.com/ICPorts-labs/chico/blob/main/examples/HelloWorld/Dockerfile#L48-L59
@@ -104,7 +102,7 @@ RUN mv nimlangserver /root/.nimble/bin/
 # node
 # https://nodejs.org/en/download/prebuilt-binaries
 WORKDIR /root
-ARG NODE_VERSION=24.14.0
+ARG NODE_VERSION=24.15.0
 RUN curl -OL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz
 RUN tar -xvf node-v${NODE_VERSION}-linux-x64.tar.xz
 RUN rm node-v${NODE_VERSION}-linux-x64.tar.xz
@@ -114,6 +112,10 @@ ENV PATH $PATH:/root/.node/bin
 # pnpm
 RUN curl -fsSL https://get.pnpm.io/install.sh | bash -s -- -y
 ENV PATH $PATH:/root/.local/share/pnpm
+
+# ic-mops, compile motoko
+# https://github.com/dfinity/ic-mops
+RUN npm i -g ic-mops
 
 # foundry
 RUN curl -L https://foundry.paradigm.xyz | bash
@@ -131,7 +133,7 @@ ENV PATH $PATH:/root/.cargo/bin
 RUN nim -v
 RUN nimble -v
 RUN node -v
-RUN pnpm -v
+# RUN pnpm -v
 RUN forge --version
 RUN ic-wasm --version
 RUN wasi2ic --version
