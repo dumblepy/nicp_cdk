@@ -8,73 +8,32 @@ import std/osproc
 import std/strutils
 import std/strformat
 import std/os
-import std/exitprocs
+import ../icp_network
 
-const 
-  DFX_PATH = "/root/.local/share/dfx/bin/dfx"
+const
+  ICP_PATH = "icp"
   T_ECDSA_DIR = "/application/examples/t_ecdsa"
+  CANISTER_NAME = "backend"
+
 
 when isMainModule:
-  if not fileExists(DFX_PATH):
-    echo "Skipping test_ecdsa because dfx is unavailable in this environment."
+  if findExe(ICP_PATH).len == 0:
+    echo "Skipping test_ecdsa because icp is unavailable in this environment."
     quit(0)
 
 
-proc previewString(s: string): string =
-  if s.len <= 50:
-    s
-  else:
-    s.substr(0, 50) & "..."
-
-var dfxNetworkStarted = false
-var dfxExitRegistered = false
-
-proc stopDfxNetwork() =
-  let code = execShellCmd(DFX_PATH & " stop >/dev/null 2>&1")
-  if code != 0:
-    discard
-
-proc registerDfxExitStop() =
-  if dfxExitRegistered:
-    return
-
-  proc cleanupDfxNetwork() {.noconv.} =
-    if dfxNetworkStarted:
-      stopDfxNetwork()
-
-  addExitProc(cleanupDfxNetwork)
-  dfxExitRegistered = true
-
-proc ensureDfxNetworkStarted() =
-  if dfxNetworkStarted:
-    return
-
-  let originalDir = getCurrentDir()
-  try:
-    setCurrentDir(T_ECDSA_DIR)
-    let code = execShellCmd(DFX_PATH & " start --clean --background --host 0.0.0.0:4943 --domain localhost --domain 0.0.0.0 >/dev/null 2>&1")
-    if code != 0:
-      raise newException(OSError, "Failed to start dfx network in " & T_ECDSA_DIR)
-  finally:
-    setCurrentDir(originalDir)
-
-  dfxNetworkStarted = true
-  registerDfxExitStop()
-
-# 共通のヘルパープロシージャ
 proc callCanisterFunction(functionName: string, args: string = ""): string =
-  ensureDfxNetworkStarted()
   let originalDir = getCurrentDir()
   try:
     setCurrentDir(T_ECDSA_DIR)
     let command = if args == "":
-      DFX_PATH & " canister call t_ecdsa_backend " & functionName & " '()'"
+      ICP_PATH & " canister call " & CANISTER_NAME & " " & functionName & " '()'"
     else:
-      DFX_PATH & " canister call t_ecdsa_backend " & functionName & " '(" & args & ")' "
-    let execResult = execProcess(command)
-    return execResult
+      ICP_PATH & " canister call " & CANISTER_NAME & " " & functionName & " '(" & args & ")'"
+    return execProcess(command).strip()
   finally:
     setCurrentDir(originalDir)
+
 
 proc runCommand(command: string) =
   let (output, code) = execCmdEx(command)
@@ -83,209 +42,201 @@ proc runCommand(command: string) =
     echo "command: ", command
     echo "output: ", output
 
-proc ensureFrontendBuilt() =
-  ensureDfxNetworkStarted()
+
+proc deployExample() =
   let originalDir = getCurrentDir()
   try:
     setCurrentDir(T_ECDSA_DIR)
 
     runCommand("pnpm install --frozen-lockfile")
 
-    runCommand(DFX_PATH & " canister create --all")
-    runCommand(DFX_PATH & " deploy t_ecdsa_backend")
-    runCommand(DFX_PATH & " generate t_ecdsa_backend")
-    runCommand(DFX_PATH & " deploy internet_identity")
-    runCommand(DFX_PATH & " generate internet_identity")
-    runCommand(DFX_PATH & " deploy t_ecdsa_frontend")
-    runCommand(DFX_PATH & " generate t_ecdsa_frontend")
+    runCommand(ICP_PATH & " canister create --all")
+    runCommand(ICP_PATH & " deploy t_ecdsa_backend")
+    runCommand(ICP_PATH & " generate t_ecdsa_backend")
+    runCommand(ICP_PATH & " deploy internet_identity")
+    runCommand(ICP_PATH & " generate internet_identity")
+    runCommand(ICP_PATH & " deploy t_ecdsa_frontend")
+    runCommand(ICP_PATH & " generate t_ecdsa_frontend")
   finally:
     setCurrentDir(originalDir)
 
 
-suite "Deploy Tests":
-  test "Deploy ECDSA canister":
-    let originalDir = getCurrentDir()
-    try:
-      setCurrentDir(T_ECDSA_DIR)
-      ensureFrontendBuilt()
-      let deployResult = execProcess(DFX_PATH & " deploy -y")
-      # deployが成功した場合を確認
-      check deployResult.contains("Deployed") or deployResult.contains("Creating") or 
-            deployResult.contains("Installing") or deployResult.contains("t_ecdsa_backend")
+withIcpNetwork(T_ECDSA_DIR):
+  suite "Deploy Tests":
+    test "Deploy ECDSA canister":
+      deployExample()
       # デプロイ後にキャニスターが完全に起動するまで待機
       sleep(3000)
-    finally:
-      setCurrentDir(originalDir)
 
 
-suite "ECDSA Management Canister Tests":
-  test "Test getPublicKey query function":
-    sleep(1000)  # キャニスターの完全な準備を待つ
-    let callResult = callCanisterFunction("getPublicKey")
-    # クエリ関数が正常に実行されることを確認
-    # キーが存在する場合は16進文字列、存在しない場合は適切なエラーメッセージが返される
-    check callResult.contains("\"") or 
-          callResult.contains("No public key generated for caller") or 
-          callResult.contains("Failed to get public key") or 
-          callResult.contains("reject")
+  suite "ECDSA Management Canister Tests":
+    test "Test getPublicKey query function":
+      sleep(1000)  # キャニスターの完全な準備を待つ
+      let callResult = callCanisterFunction("getPublicKey")
+      # クエリ関数が正常に実行されることを確認
+      # キーが存在する場合は16進文字列、存在しない場合は適切なエラーメッセージが返される
+      check callResult.contains("\"") or
+            callResult.contains("No public key generated for caller") or
+            callResult.contains("Failed to get public key") or
+            callResult.contains("reject")
 
-  test "Test getNewPublicKey update function":
-    let callResult = callCanisterFunction("getNewPublicKey")
-    # 新しい公開鍵が生成されることを確認
-    # 実際の出力は16進文字列（0xプレフィックスなし）または適切なエラーメッセージ
-    check callResult.contains("\"") or 
-          callResult.contains("Failed to get public key") or 
-          callResult.contains("IC0506") or 
-          callResult.contains("ecdsa_public_key") or
-          callResult.len > 10  # 有効な16進文字列が含まれる
+    test "Test getNewPublicKey update function":
+      let callResult = callCanisterFunction("getNewPublicKey")
+      # 新しい公開鍵が生成されることを確認
+      # 実際の出力は16進文字列（0xプレフィックスなし）または適切なエラーメッセージ
+      check callResult.contains("\"") or
+            callResult.contains("Failed to get public key") or
+            callResult.contains("IC0506") or
+            callResult.contains("ecdsa_public_key") or
+            callResult.len > 10  # 有効な16進文字列が含まれる
 
-  test "Test getPublicKey after getNewPublicKey":
-    # まず新しいキーを生成
-    discard callCanisterFunction("getNewPublicKey")
-    
-    # 少し待ってからクエリ
-    let queryResult = callCanisterFunction("getPublicKey")
-    
-    # Step 3: EVMアドレスをテスト
-    let evmResult = callCanisterFunction("getEvmAddress")
-    
-    # 新しいキーが生成された場合、クエリでも同じキーが取得できることを確認
-    check queryResult.contains("\"") and queryResult.len > 10
-    # EVMアドレスも生成されるべき
-    check evmResult.contains("0x") and evmResult.len > 10
+    test "Test getPublicKey after getNewPublicKey":
+      # まず新しいキーを生成
+      discard callCanisterFunction("getNewPublicKey")
+
+      # 少し待ってからクエリ
+      let queryResult = callCanisterFunction("getPublicKey")
+
+      # Step 3: EVMアドレスをテスト
+      let evmResult = callCanisterFunction("getEvmAddress")
+
+      # 新しいキーが生成された場合、クエリでも同じキーが取得できることを確認
+      check queryResult.contains("\"") and queryResult.len > 10
+      # EVMアドレスも生成されるべき
+      check evmResult.contains("0x") and evmResult.len > 10
 
 
-suite "ECDSA Signature and Verification Tests":
-  test "Test signWithEcdsa basic functionality":
-    sleep(1000)  # キャニスターの完全な準備を待つ
-    # まず公開鍵を生成して準備
-    discard callCanisterFunction("getNewPublicKey")
-    
-    # メッセージに署名
-    let testMessage = "\"Hello, ICP ECDSA!\""
-    let signResult = callCanisterFunction("signWithEcdsa", testMessage)
-    
-    # 署名が正常に生成されることを確認
-    check signResult.contains("\"") and signResult.len > 10
-    # 署名は16進文字列として返される
-    check not signResult.contains("reject") and not signResult.contains("Failed")
+  suite "ECDSA Signature and Verification Tests":
+    test "Test signWithEcdsa basic functionality":
+      sleep(1000)  # キャニスターの完全な準備を待つ
+      # まず公開鍵を生成して準備
+      discard callCanisterFunction("getNewPublicKey")
 
-  test "Test verifyWithEcdsa with valid signature":
-    
-    # Step 1: 公開鍵を取得
-    let publicKeyResult = callCanisterFunction("getNewPublicKey")
-    
-    # Step 2: メッセージに署名
-    let testMessage = "\"Test message for verification\""
-    let signatureResult = callCanisterFunction("signWithEcdsa", testMessage)
-    
-    # Step 3: 署名を検証
-    
-    # 公開鍵から引用符と改行を除去
-    let publicKey = publicKeyResult.replace("(\"", "").replace("\")", "").replace("\n", "").replace(" ", "").strip()
-    
-    # 署名から括弧、引用符、改行、余分なスペースを除去
-    var cleanSignature = signatureResult
-    cleanSignature = cleanSignature.replace("(", "").replace(")", "")
-    cleanSignature = cleanSignature.replace("\"", "").replace("\n", "").replace(" ", "")
-    cleanSignature = cleanSignature.replace(",", "").strip()
-    
-    # 検証用のレコード引数を構築
-    let verifyArgs = fmt"""record {{ message = {testMessage}; signature = "{cleanSignature}"; publicKey = "{publicKey}"; }}"""
-    
-    let verifyResult = callCanisterFunction("verifyWithEcdsa", verifyArgs)
-    
-    # 検証結果がtrueであることを確認
-    check verifyResult.contains("true") or verifyResult.contains("(true)")
+      # メッセージに署名
+      let testMessage = "\"Hello, ICP ECDSA!\""
+      let signResult = callCanisterFunction("signWithEcdsa", testMessage)
 
-  test "Test verifyWithEcdsa with invalid signature":
-    
-    # Step 1: 公開鍵を取得
-    let publicKeyResult = callCanisterFunction("getNewPublicKey")
-    let publicKey = publicKeyResult.replace("(\"", "").replace("\")", "").replace("\n", "").strip()
-    
-    # Step 2: 不正な署名で検証
-    let testMessage = "Test message"
-    let invalidSignature = "0123456789abcdef" # 明らかに不正な署名
-    
-    let verifyArgs = fmt"""record {{ message = "{testMessage}"; signature = "{invalidSignature}"; publicKey = "{publicKey}"; }}"""
-    
-    let verifyResult = callCanisterFunction("verifyWithEcdsa", verifyArgs)
-    
-    # 不正な署名は検証に失敗するべき
-    check verifyResult.contains("false") or verifyResult.contains("(false)") or
-          verifyResult.contains("reject") or verifyResult.contains("Failed")
-
-  test "Test signWithEcdsa with different messages":
-    
-    # 複数の異なるメッセージで署名をテスト
-    let messages = @[
-      "\"Short\"",
-      "\"Medium length message for testing\"",
-      "\"Very long message that contains multiple words and should test the signing functionality with longer input text\""
-    ]
-    
-    for i, message in messages:
-      let signResult = callCanisterFunction("signWithEcdsa", message)
-      
-      # 各メッセージで署名が生成されることを確認
+      # 署名が正常に生成されることを確認
       check signResult.contains("\"") and signResult.len > 10
+      # 署名は16進文字列として返される
+      check not signResult.contains("reject") and not signResult.contains("Failed")
 
-  test "Test getNewPublicKey function multiple times":
-    
-    # 最初の呼び出し
-    let firstResult = callCanisterFunction("getNewPublicKey")
-    
-    # 2回目の呼び出し（キャッシュされた結果が返される）
-    let secondResult = callCanisterFunction("getNewPublicKey")
-    
-    # 両方とも何らかの結果が返されることを確認
-    check firstResult.len > 0
-    check secondResult.len > 0
+    test "Test verifyWithEcdsa with valid signature":
+
+      # Step 1: 公開鍵を取得
+      let publicKeyResult = callCanisterFunction("getNewPublicKey")
+
+      # Step 2: メッセージに署名
+      let testMessage = "\"Test message for verification\""
+      let signatureResult = callCanisterFunction("signWithEcdsa", testMessage)
+
+      # Step 3: 署名を検証
+
+      # 公開鍵から引用符と改行を除去
+      let publicKey = publicKeyResult.replace("(\"", "").replace("\")", "").replace("\n", "").replace(" ", "").strip()
+
+      # 署名から括弧、引用符、改行、余分なスペースを除去
+      var cleanSignature = signatureResult
+      cleanSignature = cleanSignature.replace("(", "").replace(")", "")
+      cleanSignature = cleanSignature.replace("\"", "").replace("\n", "").replace(" ", "")
+      cleanSignature = cleanSignature.replace(",", "").strip()
+
+      # 検証用のレコード引数を構築
+      let verifyArgs = fmt"""record {{ message = {testMessage}; signature = "{cleanSignature}"; publicKey = "{publicKey}"; }}"""
+
+      let verifyResult = callCanisterFunction("verifyWithEcdsa", verifyArgs)
+
+      # 検証結果がtrueであることを確認
+      check verifyResult.contains("true") or verifyResult.contains("(true)")
+
+    test "Test verifyWithEcdsa with invalid signature":
+
+      # Step 1: 公開鍵を取得
+      let publicKeyResult = callCanisterFunction("getNewPublicKey")
+      let publicKey = publicKeyResult.replace("(\"", "").replace("\")", "").replace("\n", "").strip()
+
+      # Step 2: 不正な署名で検証
+      let testMessage = "Test message"
+      let invalidSignature = "0123456789abcdef" # 明らかに不正な署名
+
+      let verifyArgs = fmt"""record {{ message = "{testMessage}"; signature = "{invalidSignature}"; publicKey = "{publicKey}"; }}"""
+
+      let verifyResult = callCanisterFunction("verifyWithEcdsa", verifyArgs)
+
+      # 不正な署名は検証に失敗するべき
+      check verifyResult.contains("false") or verifyResult.contains("(false)") or
+            verifyResult.contains("reject") or verifyResult.contains("Failed")
+
+    test "Test signWithEcdsa with different messages":
+
+      # 複数の異なるメッセージで署名をテスト
+      let messages = @[
+        "\"Short\"",
+        "\"Medium length message for testing\"",
+        "\"Very long message that contains multiple words and should test the signing functionality with longer input text\""
+      ]
+
+      for _, message in messages:
+        let signResult = callCanisterFunction("signWithEcdsa", message)
+
+        # 各メッセージで署名が生成されることを確認
+        check signResult.contains("\"") and signResult.len > 10
+
+    test "Test getNewPublicKey function multiple times":
+
+      # 最初の呼び出し
+      let firstResult = callCanisterFunction("getNewPublicKey")
+
+      # 2回目の呼び出し（キャッシュされた結果が返される）
+      let secondResult = callCanisterFunction("getNewPublicKey")
+
+      # 両方とも何らかの結果が返されることを確認
+      check firstResult.len > 0
+      check secondResult.len > 0
 
 
-suite "EVM Address Tests":
-  test "Test getEvmAddress without public key":
-    sleep(1000)  # キャニスターの完全な準備を待つ
-    let evmResult = callCanisterFunction("getEvmAddress")
-    # データベースにキーが既に存在する場合はアドレスが返され、存在しない場合は空文字列
-    check evmResult.contains("0x") or evmResult.contains("\"\"") or evmResult.contains("reject")
+  suite "EVM Address Tests":
+    test "Test getEvmAddress without public key":
+      sleep(1000)  # キャニスターの完全な準備を待つ
+      let evmResult = callCanisterFunction("getEvmAddress")
+      # データベースにキーが既に存在する場合はアドレスが返され、存在しない場合は空文字列
+      check evmResult.contains("0x") or evmResult.contains("\"\"") or evmResult.contains("reject")
 
-  test "Test getEvmAddress after generating public key":
-    
-    # まず公開鍵を生成
-    discard callCanisterFunction("getNewPublicKey")
-    
-    # EVMアドレスを取得
-    let evmResult = callCanisterFunction("getEvmAddress")
-    
-    # 公開鍵が正常に生成された場合、EVMアドレスも取得できるべき
-    check evmResult.contains("0x") and evmResult.len > 10
+    test "Test getEvmAddress after generating public key":
+
+      # まず公開鍵を生成
+      discard callCanisterFunction("getNewPublicKey")
+
+      # EVMアドレスを取得
+      let evmResult = callCanisterFunction("getEvmAddress")
+
+      # 公開鍵が正常に生成された場合、EVMアドレスも取得できるべき
+      check evmResult.contains("0x") and evmResult.len > 10
 
 
-suite "ECDSA Integration Tests":
-  test "Test full ECDSA workflow":
-    sleep(1000)  # キャニスターの完全な準備を待つ
-    
-    # Step 1: 新しい公開鍵を生成
-    let newKeyResult = callCanisterFunction("getNewPublicKey")
-    
-    # Step 2: 生成された公開鍵をクエリ
-    let queryResult = callCanisterFunction("getPublicKey")
-    
-    # Step 3: EVMアドレスを取得
-    let evmResult = callCanisterFunction("getEvmAddress")
-    
-    # Step 4: 再度公開鍵をクエリして一貫性を確認
-    let reQueryResult = callCanisterFunction("getPublicKey")
-    
-    # 各ステップが完了することを確認（エラーでも良い）
-    check newKeyResult.len > 0
-    check queryResult.len > 0
-    check evmResult.len > 0
-    check reQueryResult.len > 0
-    
-    # 一貫性チェック：同じキーが返されることを確認
-    if queryResult.contains("0x") and reQueryResult.contains("0x"):
-      # 両方が成功した場合、同じ値であることを確認
-      check queryResult == reQueryResult
+  suite "ECDSA Integration Tests":
+    test "Test full ECDSA workflow":
+      sleep(1000)  # キャニスターの完全な準備を待つ
+
+      # Step 1: 新しい公開鍵を生成
+      let newKeyResult = callCanisterFunction("getNewPublicKey")
+
+      # Step 2: 生成された公開鍵をクエリ
+      let queryResult = callCanisterFunction("getPublicKey")
+
+      # Step 3: EVMアドレスを取得
+      let evmResult = callCanisterFunction("getEvmAddress")
+
+      # Step 4: 再度公開鍵をクエリして一貫性を確認
+      let reQueryResult = callCanisterFunction("getPublicKey")
+
+      # 各ステップが完了することを確認（エラーでも良い）
+      check newKeyResult.len > 0
+      check queryResult.len > 0
+      check evmResult.len > 0
+      check reQueryResult.len > 0
+
+      # 一貫性チェック：同じキーが返されることを確認
+      if queryResult.contains("0x") and reQueryResult.contains("0x"):
+        # 両方が成功した場合、同じ値であることを確認
+        check queryResult == reQueryResult

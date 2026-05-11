@@ -10,5 +10,6 @@ type Msg* = object
 proc caller*(_:type Msg): Principal =
   let size = ic0_msg_caller_size()
   var caller = newSeq[byte](size)
-  ic0_msg_caller_copy(ptrToInt(addr caller[0]), 0, size)
+  if size > 0:
+    ic0_msg_caller_copy(ptrToInt(addr caller[0]), 0, size)
   return Principal.fromBlob(caller)

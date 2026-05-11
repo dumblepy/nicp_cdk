@@ -17,14 +17,16 @@ alwaysApply: false
 - [x] 公式ドキュメント上の vetKD / Motoko 実装例の確認
 - [x] 既存 Nim 実装の Management Canister 呼び出しパターン調査
 - [x] 設計方針の作成
-- [ ] vetKD 型定義の追加
-- [ ] `vetkd_public_key` 呼び出しの実装
-- [ ] `vetkd_derive_key` 呼び出しの実装
-- [ ] vetKD cycles 推定処理の実装
-- [ ] `management_canister.nim` からの export 追加
-- [ ] サンプルキャニスターの追加
-- [ ] テスト追加とローカル動作確認
-- [ ] mainnet/testnet での利用上の注意を docs に反映
+- [x] vetKD 型定義の追加
+- [x] `vetkd_public_key` 呼び出しの実装
+- [x] `vetkd_derive_key` 呼び出しの実装
+- [x] vetKD cycles 推定処理の実装
+- [x] `management_canister.nim` からの export 追加
+- [x] サンプルキャニスターの追加
+- [x] テスト追加
+- [x] テスト開始/終了時の `icp` ネットワーク起動・停止を `tests/icp_network.nim` に統一
+- [x] mainnet/testnet での利用上の注意を docs に反映
+- [ ] コンパイル確認とローカル replica 動作確認
 
 ## 参考資料
 - Data Integrity / Motoko implementation: https://docs.internetcomputer.org/guides/security/data-integrity/#motoko-implementation
@@ -220,3 +222,5 @@ deriveKey(transport_public_key: blob): async blob
 - `ic0_call_cycles_add128(0, requiredCycles)` は low 64bit のみの添付になる。fallback 値は uint64 範囲内だが、将来的に 128bit cycles を扱う共通 helper が必要になる可能性がある。
 - 既存の callback では Future pointer を `uint32 env` に詰めている。WASM32 前提では既存パターンに合わせる。
 - docs の公式名は `vetKeys`、Management Canister API 名は `vetKD` / `vetkd_*`。コードでは API に合わせて `VetKd` を使う。
+- sample canister は local replica 用に `test_key_1` と固定 transport public key を使う convenience 更新メソッドを持たせた。
+- テストは `tests/icp_network.nim` の `withIcpNetwork` を使って、各 example のローカルネットワークを起動・停止するように揃えた。

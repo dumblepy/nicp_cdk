@@ -1,0 +1,5 @@
+service : {
+  "getPublicKey" : () -> (blob) ;
+  "deriveKey" : () -> (blob) ;
+  "deriveKeyWithTransportPublicKey" : (blob) -> (blob) ;
+};
