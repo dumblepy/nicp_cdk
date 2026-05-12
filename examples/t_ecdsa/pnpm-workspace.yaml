@@ -1,2 +1,4 @@
 packages:
   - src/t_ecdsa_frontend
+allowBuilds:
+  esbuild: true
