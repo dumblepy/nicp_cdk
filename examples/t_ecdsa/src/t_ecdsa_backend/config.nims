@@ -8,6 +8,9 @@ import std/os
 --cc: "clang"
 --define: "useMalloc"
 
+switch("define", "wasi")
+switch("define", "rustcryptoWasi")
+
 # Enforce static linking for the WASI target to make it self-contained, similar to icpp-pro
 switch("passC", "-target wasm32-wasi")
 switch("passL", "-target wasm32-wasi")
