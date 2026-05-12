@@ -15,6 +15,8 @@ import std/os
 --cc: "clang"
 --define: "useMalloc"
 
+switch("define", "wasm32-wasi")
+
 # Enforce static linking for the WASI target to make it self-contained.
 switch("passC", "-target wasm32-wasi")
 switch("passL", "-target wasm32-wasi")

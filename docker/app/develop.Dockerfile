@@ -58,6 +58,14 @@ RUN apt install -y lldb lld gcc-multilib
 
 RUN apt autoremove -y
 
+# dfx
+# https://github.com/dfinity/sdk/releases/latest
+WORKDIR /root
+RUN curl -OL https://internetcomputer.org/install.sh
+RUN chmod +x install.sh
+RUN DFXVM_INIT_YES=yes ./install.sh
+RUN rm -f install.sh
+
 # icp
 # https://github.com/dfinity/icp-cli
 WORKDIR /root

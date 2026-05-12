@@ -1,8 +1,8 @@
-import ./nicp_functions/new_impl
-import ./nicp_functions/c_headers_impl
-import ./nicp_functions/development_build_impl
-import ./nicp_functions/production_build_impl
-import ./nicp_functions/network_impl
+import ./ndfx_functions/new_impl
+import ./ndfx_functions/c_headers_impl
+import ./ndfx_functions/development_build_impl
+import ./ndfx_functions/production_build_impl
+import ./ndfx_functions/network_impl
 
 when isMainModule:
   import cligen

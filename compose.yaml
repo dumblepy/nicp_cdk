@@ -23,4 +23,5 @@ services:
     volumes:
       - .:/application
     ports:
+      - 4943:4943
       - 8000:8000
