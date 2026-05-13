@@ -26,7 +26,8 @@ alwaysApply: false
 - [x] テスト追加
 - [x] テスト開始/終了時の `icp` ネットワーク起動・停止を `tests/icp_network.nim` に統一
 - [x] mainnet/testnet での利用上の注意を docs に反映
-- [ ] コンパイル確認とローカル replica 動作確認
+- [x] コンパイル確認
+- [ ] ローカル replica 動作確認
 
 ## 参考資料
 - Data Integrity / Motoko implementation: https://docs.internetcomputer.org/guides/security/data-integrity/#motoko-implementation

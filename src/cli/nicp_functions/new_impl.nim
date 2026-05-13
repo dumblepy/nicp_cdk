@@ -71,7 +71,7 @@ build:
   steps:
     - type: script
       commands:
-        - nicp build
+        - bash -c 'if [ \"${DFX_NETWORK:-local}\" = \"local\" ]; then nicp developmentBuild; else nicp productionBuild; fi'
 """
 
 const backendGitignore = """

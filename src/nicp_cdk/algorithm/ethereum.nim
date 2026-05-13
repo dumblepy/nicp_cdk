@@ -5,7 +5,6 @@
 ## and EIP-compliant message hashing for Web3 applications.
 
 import rustcrypto/algorithm/common
-import rustcrypto/algorithm/ffi
 import rustcrypto/algorithm/secp256k1
 import rustcrypto/algorithm/sha3
 import rustcrypto/ethereum
@@ -35,21 +34,8 @@ const
     0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xbf'u8, 0xff'u8, 0xff'u8, 0x0c'u8,
   ]
 
-proc cptr(data: openArray[byte]): ptr uint8 =
-  if data.len == 0:
-    nil
-  else:
-    cast[ptr uint8](unsafeAddr data[0])
-
-
 proc toFixedArray[T](data: openArray[byte]): T =
   doAssert data.len == result.len
-  for i in 0..<data.len:
-    result[i] = data[i]
-
-
-proc toSeqBytes(data: openArray[byte]): seq[uint8] =
-  result = newSeq[uint8](data.len)
   for i in 0..<data.len:
     result[i] = data[i]
 
@@ -275,7 +261,7 @@ proc toEvmHexString*(data: seq[uint8], prefix: bool = true): string =
     return hexStr
 
 
-proc decompressPublicKey*(compressedKey: seq[uint8]): seq[uint8] =
+proc decompressPublicKey*(compressedKey: openArray[byte]): seq[uint8] =
   ## Decompress a compressed secp256k1 public key (33 bytes) to uncompressed format (65 bytes)
   if compressedKey.len != 33:
     raise newException(EthereumConversionError, "Compressed key must be 33 bytes")
@@ -310,10 +296,6 @@ proc decompressPublicKey*(compressedKey: seq[uint8]): seq[uint8] =
       result[i + 33] = yBytes[i]
   except CatchableError as e:
     raise newException(EthereumConversionError, e.msg)
-    # if e of EthereumConversionError:
-    #   raise newException(EthereumConversionError, e.msg)
-    # else:
-    #   raise newException(EthereumConversionError, "secp256k1 decompression failed: " & e.msg)
 
 
 func keccak256Hash*(data: string): seq[uint8] =
@@ -345,50 +327,6 @@ proc parseSignature*(signatureHex: string): tuple[r: seq[uint8], s: seq[uint8], 
     raise newException(SignatureFormatError, e.msg)
 
 
-proc recoverPublicKeyFromSignature*(
-  messageHash: seq[uint8],
-  signatureHex: string,
-  recoveryId: uint8
-): seq[uint8] =
-  ## Recover public key from signature using RustCrypto secp256k1.
-  try:
-    if messageHash.len != 32:
-      raise newException(EcdsaVerificationError, "message hash must be 32 bytes")
-
-    let (r, s, _) = parseSignature(signatureHex)
-    let digest = ensureMessageDigest(messageHash)
-    let recoverableSig = recoverableSignatureFromCompact(r & s, recoveryId)
-    var publicKey = newSeq[uint8](65)
-    let status = secp256k1EcdsaRecoverPublicKeyRaw(
-      cptr(digest),
-      csize_t(digest.len),
-      cptr(recoverableSig),
-      csize_t(recoverableSig.len),
-      cast[ptr uint8](addr publicKey[0]),
-      csize_t(publicKey.len),
-      Secp256k1PublicKeyFormatUncompressed,
-    )
-    case status
-    of RustCryptoOk:
-      return publicKey
-    of RustCryptoErrVerificationFailed:
-      raise newException(EcdsaVerificationError, "Failed to recover public key")
-    of RustCryptoErrNullOutput,
-       RustCryptoErrOutputTooShort,
-       RustCryptoErrNullInputWithData,
-       RustCryptoErrInvalidMessageDigest,
-       RustCryptoErrInvalidSignature,
-       RustCryptoErrInvalidPublicKeyFormat,
-       RustCryptoErrPanic:
-      raise newException(EcdsaVerificationError, "Recovery failed with status " & $status)
-    else:
-      raise newException(EcdsaVerificationError, "Recovery failed with unexpected status " & $status)
-  except CatchableError as e:
-    if e of SignatureFormatError or e of EcdsaVerificationError:
-      raise
-    raise newException(EcdsaVerificationError, e.msg)
-
-
 proc publicKeyToEthereumAddress*(pubKey: seq[uint8]): string =
   ## Convert public key (65 bytes uncompressed) to Ethereum address
   let uncompressed = ensureUncompressedPublicKey(pubKey)
@@ -409,7 +347,7 @@ proc icpPublicKeyToEvmAddress*(icpPublicKey: seq[uint8]): string =
         " bytes. Use only the `public_key` field from ecdsa_public_key, not `chain_code`.",
     )
   let compressed = ensureCompressedPublicKey(icpPublicKey)
-  let uncompressed = decompressPublicKey(toSeqBytes(compressed))
+  let uncompressed = decompressPublicKey(compressed)
   return publicKeyToEthereumAddress(uncompressed)
 
 
