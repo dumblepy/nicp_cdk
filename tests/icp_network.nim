@@ -21,9 +21,13 @@ proc stopIcpNetwork*(projectDir: string) =
     icpNetworkStartedDir = ""
 
 proc startIcpNetwork*(projectDir: string) =
-  let code = runIcpCommand(projectDir, "icp network start -d >/dev/null 2>&1")
-  if code != 0:
-    raise newException(OSError, "Failed to start icp network in " & projectDir)
+  var lastCode = -1
+  for attempt in 0..2:
+    lastCode = runIcpCommand(projectDir, "icp network start -d >/dev/null 2>&1")
+    if lastCode == 0:
+      return
+    sleep(1000)
+  raise newException(OSError, "Failed to start icp network in " & projectDir & " (exit code " & $lastCode & ")")
 
 proc registerIcpNetworkStop*() =
   if icpNetworkQuitRegistered:
@@ -46,6 +50,15 @@ proc ensureIcpNetworkStarted*(projectDir: string) =
 
 template withIcpNetwork*(projectDir: string, body: untyped) =
   block:
+    ensureIcpNetworkStarted(projectDir)
+    try:
+      body
+    finally:
+      stopIcpNetwork(projectDir)
+
+template withRestartedIcpNetwork*(projectDir: string, body: untyped) =
+  block:
+    stopIcpNetwork(projectDir)
     ensureIcpNetworkStarted(projectDir)
     try:
       body

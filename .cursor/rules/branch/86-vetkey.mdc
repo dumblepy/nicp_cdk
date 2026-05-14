@@ -10,7 +10,8 @@ alwaysApply: false
 - `vetkd_public_key` と `vetkd_derive_key` の型定義、Candid エンコード、レスポンスデコード、非同期 callback 処理を実装する。
 - `vetkd_derive_key` では必要 cycles を明示的に添付し、可能であれば System API の cost 関数を利用する。
 - HTTP Outcall と t-ECDSA の既存 Management Canister 呼び出し実装を参考に、既存 API の書き味とモジュール構成に合わせる。
-- 最小のサンプルキャニスターとテストを追加し、ローカル replica で `test_key_1` を使った動作確認を行う。
+- 最小のサンプルキャニスターとテストを追加し、ローカル replica で vetKD（`key_1` 等、環境に公開された鍵名）を使った動作確認を行う。
+- vetKeys を実用的な暗号化ストレージ用途で扱うテストを追加し、`context` / `input` / transport key / access control の責務分担が崩れないことを確認する。
 
 ## 進捗
 - [x] プロジェクトルールとブランチルールの確認
@@ -27,12 +28,28 @@ alwaysApply: false
 - [x] テスト開始/終了時の `icp` ネットワーク起動・停止を `tests/icp_network.nim` に統一
 - [x] mainnet/testnet での利用上の注意を docs に反映
 - [x] コンパイル確認
-- [ ] ローカル replica 動作確認
+- [x] ローカル replica 動作確認
+- [x] `tests/icp_network.nim` に再起動用 helper を追加し、vetkey 統合テストを `stop -> start -> 実行` の順に変更
+- [x] 実用的な vetKeys ユースケースの実装方針・テスト設計をブランチルールへ追記
+- [x] encrypted notes / private key-value store 相当のテスト fixture を追加
+- [x] caller ごとの `context` 分離と resource ごとの `input` 分離を検証
+- [x] shared resource context と ACL による共有鍵導出を検証
+- [x] key version を `input` に含める key rotation ケースを検証
+- [x] 不正 caller / 不正 resource / 不正 transport public key の失敗ケースを検証
+- [x] principal を key にした private KV の encrypt / fetch / decrypt roundtrip を追加
+- [x] Private KV（vetKey）往復の React フロントエンド（Internet Identity + pnpm）を `examples/vetkey/frontend` に追加
 
 ## 参考資料
 - Data Integrity / Motoko implementation: https://docs.internetcomputer.org/guides/security/data-integrity/#motoko-implementation
 - Management Canister / vetKD: https://docs.internetcomputer.org/references/management-canister#vetkd-verifiable-encrypted-threshold-key-derivation
 - Management Canister / cycle costs: https://docs.internetcomputer.org/references/management-canister#cycle-costs
+- vetKeys overview: https://internetcomputer.org/docs/references/vetkeys-overview
+- vetKD API: https://internetcomputer.org/docs/building-apps/network-features/vetkeys/api
+- vetKeys introduction: https://docs.internetcomputer.org/building-apps/network-features/vetkeys/introduction
+- vetKeys IBE: https://internetcomputer.org/docs/building-apps/network-features/vetkeys/identity-based-encryption
+- DFINITY vetkeys examples: https://github.com/dfinity/vetkeys
+- `@dfinity/vetkeys` frontend utilities: https://dfinity.github.io/vetkeys/modules/_dfinity_vetkeys.html
+- `ic_vetkeys` Rust utilities: https://docs.rs/ic-vetkeys/latest/ic_vetkeys/
 - 既存 HTTP Outcall 実装: `src/nicp_cdk/canisters/management_canister/http_outcall.nim`
 - 既存 t-ECDSA 実装: `src/nicp_cdk/canisters/management_canister/t_ecdsa.nim`
 - 既存 System API binding: `src/nicp_cdk/ic0/ic0.nim`
@@ -211,7 +228,7 @@ deriveKey(transport_public_key: blob): async blob
 
 統合テスト:
 
-- ローカル replica で `test_key_1` を使い、`vetkd_public_key` が非空 blob を返すこと。
+- ローカル `icp` managed replica では vetKD のしきい値として **`key_1`** のみが公開されることがある（`test_key_1` は無い）。サンプルはそれに合わせ、`vetkd_public_key` が非空 blob を返すこと。
 - 有効な transport public key を渡して `vetkd_derive_key` が非空 encrypted key を返すこと。
 - cycles 不足や不正な transport public key の reject message が Future の失敗として見えること。
 
@@ -223,5 +240,88 @@ deriveKey(transport_public_key: blob): async blob
 - `ic0_call_cycles_add128(0, requiredCycles)` は low 64bit のみの添付になる。fallback 値は uint64 範囲内だが、将来的に 128bit cycles を扱う共通 helper が必要になる可能性がある。
 - 既存の callback では Future pointer を `uint32 env` に詰めている。WASM32 前提では既存パターンに合わせる。
 - docs の公式名は `vetKeys`、Management Canister API 名は `vetKD` / `vetkd_*`。コードでは API に合わせて `VetKd` を使う。
-- sample canister は local replica 用に `test_key_1` と固定 transport public key を使う convenience 更新メソッドを持たせた。
+- sample canister は local replica 用に固定 transport public key を使う convenience 更新メソッドを持たせた。
+- この環境の local replica では `vetkd:Bls12_381_G2:key_1` が公開されていたため、サンプルの既定鍵名は `key_1` に合わせる。
 - テストは `tests/icp_network.nim` の `withIcpNetwork` を使って、各 example のローカルネットワークを起動・停止するように揃えた。
+- private KV の roundtrip は `private-kv-v1|owner=<principal>` / `kv:<principal>:value-key:v1` のラベルで導出し、JS helper では `@dfinity/vetkeys` を用いて encrypted VetKey と AES-GCM ciphertext を往復検証する。
+
+### 追加要件: 実用的な vetKeys ユースケーステスト
+
+このブランチでは、Management Canister wrapper が単に非空 blob を返すことだけでなく、実アプリで重要になる鍵空間の分離・アクセス制御・鍵バージョン管理をテストする。対象ユースケースは encrypted notes または private key-value store 相当とし、canister には ciphertext と metadata だけを保存する想定で設計する。CDK 側が frontend の復号ライブラリまで実装する必要はないが、`context` と `input` が実用上のラベルとして正しく組み立てられることを確認する。
+
+#### 実装方針
+
+- 既存 wrapper の API 形状は維持し、アプリ固有の認可や `context` 構築は example / test canister 側に閉じ込める。
+- `context` は frontend から受け取らず、canister 側で `domain_separator`、caller principal、tenant/resource policy から決定する。
+- `input` は resource label と key version を含む構造化 bytes とする。例: `note:<note_id>:key:v1`、`kv:<key_id>:value-key:v1`。
+- 文字列連結の曖昧性を避けるため、可能なら length prefix または Candid record の encode 結果を bytes として使う。最初のテスト実装では既存 helper の都合に合わせ、曖昧性が出ない固定 prefix 形式でもよい。
+- transport secret key は frontend/test client 側だけが持つ前提を崩さない。canister/test canister に渡すのは transport public key のみ。
+- `vetkd_public_key` と `vetkd_derive_key` は同じ `context` / `key_id` を使う。`decryptAndVerify` に必要な `input` が変わるケースをテストデータとして明示する。
+- local replica では実環境に合わせて `key_1` または `dfx_test_key` を使う。mainnet test の設計メモでは `test_key_1`、本番設計では `key_1` とし、key name 変更で過去 ciphertext が復号不能になることを明記する。
+
+#### テスト対象モデル
+
+encrypted notes 相当の test canister を想定する。
+
+```text
+note_id       : text
+owner         : principal
+acl           : set principal
+ciphertext    : blob
+nonce         : blob
+aad           : blob
+key_version   : nat
+```
+
+owner 専用 note の鍵空間:
+
+```text
+context = "encrypted-notes-v1" || caller_principal
+input   = "note:" || note_id || ":key:v" || key_version
+```
+
+shared note の鍵空間:
+
+```text
+context = "shared-note-v1" || note_id
+input   = "content-key:v" || key_version
+```
+
+private key-value store 相当の場合:
+
+```text
+context = "private-kv-v1" || caller_principal
+input   = "kv:" || key_id || ":value-key:v" || key_version
+```
+
+#### 追加テスト設計
+
+- owner note derive
+  - caller A が `note:a:key:v1` で public key と encrypted key を取得できる。
+  - 同じ caller / same note / same version では同じ鍵空間を使うため、復号検証に使う `public_key` と `input` の組が安定する。
+- caller isolation
+  - caller A と caller B が同じ `note_id` / `input` を指定しても、owner 専用 context では caller principal が違うため別鍵空間になる。
+  - B が A の private note の derive API を直接呼んだ場合は、ACL で拒否する。
+- resource isolation
+  - 同じ caller でも `note:1:key:v1` と `note:2:key:v1` は別 `input` になり、同じ鍵として扱われない。
+- key rotation
+  - `note:1:key:v1` と `note:1:key:v2` は別 `input` になり、metadata の `key_version` によって復号対象を選ぶ。
+  - rotation 後の旧 ciphertext は旧 version の input を保持していないと復号できない、という仕様をテスト名とコメントに残す。
+- shared resource context
+  - ACL 許可済み caller A/B は同じ `context = shared-note-v1 || note_id` と `input = content-key:v1` を使える。
+  - 未許可 caller C は同じ note_id を指定しても derive を拒否される。
+  - ACL から削除した caller は以後 derive を拒否される。ただし過去に取得済みの鍵や復号済み content key は失効できないため、厳密な revoke は key version 更新と再暗号化で扱う。
+- invalid transport public key
+  - 不正な transport public key を渡した場合、Management Canister reject が Future failure として観測できる。
+- metadata only storage
+  - canister に保存する値は ciphertext / nonce / aad / key_version / note_id までとし、vetKey や symmetric key を保存しないことを test canister の API surface で確認する。
+
+#### 設計上の注意
+
+- vetKeys は認証ではない。テストでは caller の認証済み principal を前提に、canister の ACL が鍵導出可否を決める構造を確認する。
+- canister は平文 vetKey を見ない。`vetkd_derive_key` の戻り値は encrypted key のまま test client/frontend に返す。
+- `context` を引数として公開 API に露出しない。公開する場合でも debug/test-only とし、本番 API の設計例には含めない。
+- shared context 方式は便利だが、ACL 変更だけでは過去に取得された鍵を失効できない。失効を扱うテストでは key version bump と再暗号化を必須の仕様として書く。
+- frontend 側の実復号まで検証する場合は `@dfinity/vetkeys` または `ic_vetkeys` の utilities を使い、`decryptAndVerify` / symmetric key derivation を省略しない。
+- `reply` の型変換は `uint64` より `uint` / `nat` と相性がよく、テスト fixture の summary は `nat` を返す形に寄せた。
+- `icp network start -d` は停止直後に失敗することがあったので、テストヘルパー側で再試行するようにした。

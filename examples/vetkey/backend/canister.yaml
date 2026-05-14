@@ -5,4 +5,4 @@ build:
   steps:
     - type: script
       commands:
-        - nicp build
+        - nicp developmentBuild

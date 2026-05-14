@@ -14,5 +14,5 @@ The entry point is [`backend/src/main.nim`](./src/main.nim).
 
 ## Notes
 
-- `test_key_1` is intended for local development and testing.
-- Use `key_1` for mainnet and testnet deployments.
+- サンプル実装（`controller.nim` の `VetKdKeyName`）は **`key_1`**（`icp` のローカル managed と本番の両方で利用可能な名前）を使います。
+- 別のレプリカで **`test_key_1`** しか無い場合は、その環境に合わせて `VetKdKeyName` を変更してください。

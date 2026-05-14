@@ -1,0 +1,15 @@
+{
+  "name": "icp-frontend-environment-variables",
+  "scripts": {
+    "dev": "pnpm --dir app run dev",
+    "generate": "pnpm --dir app run generate",
+    "build": "pnpm --dir app run build",
+    "lint": "pnpm --dir app run lint"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "workspaces": [
+    "app"
+  ]
+}

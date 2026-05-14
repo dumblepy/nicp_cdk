@@ -2,3 +2,12 @@
 
 canisters:
   - backend
+  - frontend
+
+networks:
+  - name: local
+    mode: managed
+    gateway:
+      bind: "0.0.0.0"
+      port: 8000
+    ii: true # iiが有効になる。 http://id.ai.localhost:8000/#authorize
