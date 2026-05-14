@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v0.1.0/docs/schemas/canister-yaml-schema.json
+
+name: frontend
+
+recipe:
+  # https://github.com/dfinity/icp-cli-recipes/blob/main/recipes/asset-canister/README.md
+  type: "@dfinity/asset-canister@v2.1.0"
+  configuration:
+    build:
+      - pnpm install
+      - pnpm run generate
+      - pnpm run build
+    dir: app/dist

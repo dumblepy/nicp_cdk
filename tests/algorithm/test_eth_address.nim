@@ -124,10 +124,20 @@ suite "Ethereum Address Conversion Tests":
     
     expect(EthereumConversionError):
       discard icpPublicKeyToEvmAddress(newSeq[uint8](34))  # Too long
+
+    expect(EthereumConversionError):
+      discard icpPublicKeyToEvmAddress(newSeq[uint8](65))  # Wrong: 65 bytes must start with 0x04
     
     # Test with empty sequence
     expect(EthereumConversionError):
       discard icpPublicKeyToEvmAddress(@[])
+
+  test "icpPublicKeyToEvmAddress known ICP compressed public key":
+    let pk: seq[uint8] = @[
+      2'u8, 184, 241, 143, 103, 71, 137, 127, 190, 154, 216, 182, 115, 172, 131, 115,
+      158, 221, 104, 189, 153, 101, 176, 128, 207, 9, 83, 63, 93, 182, 195, 41, 47'u8,
+    ]
+    check icpPublicKeyToEvmAddress(pk) == "0x491635bc2dbfe8445334f2a2ccc0fd628f6a7afe"
   
   test "convertIcpSignatureToEthereum function":
     let secretKey = Secp256k1.generateSecretKey()

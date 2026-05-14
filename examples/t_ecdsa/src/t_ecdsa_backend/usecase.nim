@@ -10,7 +10,9 @@ import ../../../../src/nicp_cdk/algorithm/ecdsa
 import ../../../../src/nicp_cdk/algorithm/hex_bytes
 import ./database
 
+## ECDSA `key_id.name` はサブネットに登録された鍵名と一致させる（vetKD ローカル用の `test_key_1` とは別）。
 const NONCE = "NONCE"
+const EcdsaMasterKeyName = "key_1"
 
 proc getNewPublicKey*(caller: Principal): Future[string] {.async.} =
   ## Generates a new public key for the given caller Principal and caches it.
@@ -34,14 +36,16 @@ proc getNewPublicKey*(caller: Principal): Future[string] {.async.} =
     # derivation_path: @[caller.bytes],
     key_id: EcdsaKeyId(
       curve: EcdsaCurve.secp256k1,
-      name: "dfx_test_key"
+      name: EcdsaMasterKeyName
     )
   )
   
   let publicKeyResult = await ManagementCanister.publicKey(arg)
+  echo "publicKeyResult: ", publicKeyResult
   let publicKeyBytes = publicKeyResult.public_key
   database.setPublicKey(caller, publicKeyBytes)
   let publicKey = hex_bytes.toHexString(publicKeyBytes)
+  echo "publicKey: ", publicKey
   return publicKey
 
 
@@ -84,7 +88,7 @@ proc signWithEcdsa*(caller: Principal, message: string): Future[string] {.async.
     derivation_path: @[derivationPathBytes],
     key_id: EcdsaKeyId(
       curve: EcdsaCurve.secp256k1,
-      name: "dfx_test_key"
+      name: EcdsaMasterKeyName
     )
   )
 
@@ -123,16 +127,15 @@ proc verifyWithEcdsa*(message: string, signature: string, publicKey: string): bo
 
 
 proc getEvmAddress*(caller: Principal): string =
-  try:
-    let publicKeyBytes = getPublicKey(caller)
-    if publicKeyBytes.len > 0:
-      let evmAddress = icpPublicKeyToEvmAddress(hex_bytes.hexToBytes(publicKeyBytes))
-      return evmAddress
-    else:
-      return ""
-  except Exception:
-    # No public key has been generated for the caller yet
-    return ""
+  ## Returns the Ethereum-style address for the caller's ICP threshold ECDSA public key.
+  ## Raises ``ValueError`` if no key exists yet, or ``EthereumConversionError`` if the
+  ## stored blob is not valid SEC1 secp256k1 (see ``icpPublicKeyToEvmAddress``).
+  if not database.hasKey(caller):
+    raise newException(
+      ValueError,
+      "No public key for this caller; call getNewPublicKey first.",
+    )
+  return icpPublicKeyToEvmAddress(database.getPublicKey(caller))
 
 
 proc signWithEthereum*(caller: Principal, message: string): Future[string] {.async.} =
@@ -159,7 +162,7 @@ proc signWithEthereum*(caller: Principal, message: string): Future[string] {.asy
     # derivation_path: @[caller.bytes],
     key_id: EcdsaKeyId(
       curve: EcdsaCurve.secp256k1,
-      name: "dfx_test_key"
+      name: EcdsaMasterKeyName
     )
   )
 
@@ -221,7 +224,7 @@ proc signWithEvmWallet*(caller: Principal, message: seq[uint8]): Future[string] 
     # derivation_path: @[caller.bytes],
     key_id: EcdsaKeyId(
       curve: EcdsaCurve.secp256k1,
-      name: "dfx_test_key"
+      name: EcdsaMasterKeyName
     )
   )
 

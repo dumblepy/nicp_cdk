@@ -5,7 +5,6 @@
 ## and EIP-compliant message hashing for Web3 applications.
 
 import rustcrypto/algorithm/common
-import rustcrypto/algorithm/ffi
 import rustcrypto/algorithm/secp256k1
 import rustcrypto/algorithm/sha3
 import rustcrypto/ethereum
@@ -27,18 +26,13 @@ const
     0xFFFFFFFF'u32,
     0xFFFFFFFF'u32,
   ]
-
-let secp256k1SqrtExponent = hexToBytes(
-  "3fffffffffffffffffffffffffffffffffffffffffffffffffffffffbfffff0c"
-)
-
-
-proc cptr(data: openArray[byte]): ptr uint8 =
-  if data.len == 0:
-    nil
-  else:
-    cast[ptr uint8](unsafeAddr data[0])
-
+  ## (p + 1) / 4 for secp256k1 (big-endian bytes). Used for y = sqrt(x^3+7) via modPow.
+  secp256k1SqrtExponent: array[32, uint8] = [
+    0x3f'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8,
+    0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8,
+    0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8,
+    0xff'u8, 0xff'u8, 0xff'u8, 0xff'u8, 0xbf'u8, 0xff'u8, 0xff'u8, 0x0c'u8,
+  ]
 
 proc toFixedArray[T](data: openArray[byte]): T =
   doAssert data.len == result.len
@@ -46,11 +40,10 @@ proc toFixedArray[T](data: openArray[byte]): T =
     result[i] = data[i]
 
 
-proc toSeqBytes(data: openArray[byte]): seq[uint8] =
-  result = newSeq[uint8](data.len)
-  for i in 0..<data.len:
-    result[i] = data[i]
-
+when defined(wasi) or defined(rustcryptoWasi):
+  ## LTO (-flto) + small-field inlining on wasm32-wasip1 has been observed to break
+  ## uint64-heavy limb math; keep these procs outlined for correct secp256k1 decompression.
+  {.push noinline.}
 
 proc normalizeWords(words: openArray[uint32]): seq[uint32] =
   result = @[]
@@ -96,7 +89,8 @@ proc addWords(a, b: openArray[uint32]): seq[uint32] =
 
 
 proc subWords(a, b: openArray[uint32]): seq[uint32] =
-  doAssert cmpWords(a, b) >= 0
+  if cmpWords(a, b) < 0:
+    raise newException(EthereumConversionError, "internal field subtraction underflow")
   result = newSeq[uint32](a.len)
   var borrow: uint64 = 0
   for i in 0..<a.len:
@@ -187,6 +181,9 @@ proc modPow(base: openArray[uint32], exponent: openArray[uint8]): seq[uint32] =
 
   result = padField(resultWords)
 
+when defined(wasi) or defined(rustcryptoWasi):
+  {.pop.}
+
 
 proc bytesToFieldWords(data: openArray[byte]): seq[uint32] =
   if data.len != 32:
@@ -264,7 +261,7 @@ proc toEvmHexString*(data: seq[uint8], prefix: bool = true): string =
     return hexStr
 
 
-proc decompressPublicKey*(compressedKey: seq[uint8]): seq[uint8] =
+proc decompressPublicKey*(compressedKey: openArray[byte]): seq[uint8] =
   ## Decompress a compressed secp256k1 public key (33 bytes) to uncompressed format (65 bytes)
   if compressedKey.len != 33:
     raise newException(EthereumConversionError, "Compressed key must be 33 bytes")
@@ -278,8 +275,11 @@ proc decompressPublicKey*(compressedKey: seq[uint8]): seq[uint8] =
     let rhs = reduceModP(addWords(xCubed, @[7'u32]))
     let yWords = modPow(rhs, secp256k1SqrtExponent)
 
-    if modMul(yWords, yWords) != padField(rhs):
-      raise newException(EthereumConversionError, "compressed key is not on the secp256k1 curve")
+    if cmpWords(modMul(yWords, yWords), rhs) != 0:
+      let head = toHexString(compressedKey[0 ..< min(8, compressedKey.len)])
+      raise newException(EthereumConversionError,
+        "compressed key is not on the secp256k1 curve (len=" & $compressedKey.len &
+        ", head=" & head & "); expected SEC1 compressed secp256k1 from ICP ecdsa_public_key")
 
     var finalY = yWords
     let yIsOdd = fieldParity(finalY)
@@ -295,9 +295,7 @@ proc decompressPublicKey*(compressedKey: seq[uint8]): seq[uint8] =
       result[i + 1] = xBytes[i]
       result[i + 33] = yBytes[i]
   except CatchableError as e:
-    if e of EthereumConversionError:
-      raise
-    raise newException(EthereumConversionError, "secp256k1 decompression failed: " & e.msg)
+    raise newException(EthereumConversionError, e.msg)
 
 
 func keccak256Hash*(data: string): seq[uint8] =
@@ -329,50 +327,6 @@ proc parseSignature*(signatureHex: string): tuple[r: seq[uint8], s: seq[uint8], 
     raise newException(SignatureFormatError, e.msg)
 
 
-proc recoverPublicKeyFromSignature*(
-  messageHash: seq[uint8],
-  signatureHex: string,
-  recoveryId: uint8
-): seq[uint8] =
-  ## Recover public key from signature using RustCrypto secp256k1.
-  try:
-    if messageHash.len != 32:
-      raise newException(EcdsaVerificationError, "message hash must be 32 bytes")
-
-    let (r, s, _) = parseSignature(signatureHex)
-    let digest = ensureMessageDigest(messageHash)
-    let recoverableSig = recoverableSignatureFromCompact(r & s, recoveryId)
-    var publicKey = newSeq[uint8](65)
-    let status = secp256k1EcdsaRecoverPublicKeyRaw(
-      cptr(digest),
-      csize_t(digest.len),
-      cptr(recoverableSig),
-      csize_t(recoverableSig.len),
-      cast[ptr uint8](addr publicKey[0]),
-      csize_t(publicKey.len),
-      Secp256k1PublicKeyFormatUncompressed,
-    )
-    case status
-    of RustCryptoOk:
-      return publicKey
-    of RustCryptoErrVerificationFailed:
-      raise newException(EcdsaVerificationError, "Failed to recover public key")
-    of RustCryptoErrNullOutput,
-       RustCryptoErrOutputTooShort,
-       RustCryptoErrNullInputWithData,
-       RustCryptoErrInvalidMessageDigest,
-       RustCryptoErrInvalidSignature,
-       RustCryptoErrInvalidPublicKeyFormat,
-       RustCryptoErrPanic:
-      raise newException(EcdsaVerificationError, "Recovery failed with status " & $status)
-    else:
-      raise newException(EcdsaVerificationError, "Recovery failed with unexpected status " & $status)
-  except CatchableError as e:
-    if e of SignatureFormatError or e of EcdsaVerificationError:
-      raise
-    raise newException(EcdsaVerificationError, e.msg)
-
-
 proc publicKeyToEthereumAddress*(pubKey: seq[uint8]): string =
   ## Convert public key (65 bytes uncompressed) to Ethereum address
   let uncompressed = ensureUncompressedPublicKey(pubKey)
@@ -380,9 +334,20 @@ proc publicKeyToEthereumAddress*(pubKey: seq[uint8]): string =
 
 
 proc icpPublicKeyToEvmAddress*(icpPublicKey: seq[uint8]): string =
-  ## Convert ICP ECDSA public key (33 bytes compressed format) to Ethereum address
+  ## Convert ICP ECDSA public key to Ethereum address.
+  ## Accepts SEC1 compressed (33 bytes, prefix 0x02/0x03) per IC spec, or uncompressed (65 bytes, 0x04).
+  ## Use only the ``public_key`` blob from ``ecdsa_public_key``; do not concatenate ``chain_code``.
+  if icpPublicKey.len == 65 and icpPublicKey[0] == 0x04'u8:
+    return publicKeyToEthereumAddress(icpPublicKey)
+  if icpPublicKey.len != 33:
+    raise newException(
+      EthereumConversionError,
+      "ICP ECDSA public key must be 33 bytes (SEC1 compressed) or 65 bytes (SEC1 uncompressed, 0x04); got " &
+        $icpPublicKey.len &
+        " bytes. Use only the `public_key` field from ecdsa_public_key, not `chain_code`.",
+    )
   let compressed = ensureCompressedPublicKey(icpPublicKey)
-  let uncompressed = decompressPublicKey(toSeqBytes(compressed))
+  let uncompressed = decompressPublicKey(compressed)
   return publicKeyToEthereumAddress(uncompressed)
 
 

@@ -1,0 +1,113 @@
+service : {
+  "getPublicKey" : () -> (blob) ;
+  "deriveKey" : () -> (blob) ;
+  "deriveKeyWithTransportPublicKey" : (blob) -> (blob) ;
+  "createPrivateNote" : (text, text, text, text, nat64) -> (record {
+    "aad_len" : nat ;
+    "ciphertext_len" : nat ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "nonce_len" : nat ;
+    "owner" : principal ;
+  }) ;
+  "describePrivateNote" : (principal, text) -> (record {
+    "aad_len" : nat ;
+    "ciphertext_len" : nat ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "nonce_len" : nat ;
+    "owner" : principal ;
+  }) ;
+  "rotatePrivateNoteKey" : (principal, text, nat64) -> (record {
+    "aad_len" : nat ;
+    "ciphertext_len" : nat ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "nonce_len" : nat ;
+    "owner" : principal ;
+  }) ;
+  "derivePrivateNoteKey" : (principal, text, text) -> (record {
+    "context_label" : text ;
+    "encrypted_key" : blob ;
+    "input_label" : text ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "owner" : principal ;
+    "public_key" : blob ;
+  }) ;
+  "storePrivateKv" : (blob, nat64) -> (record {
+    "aad_len" : nat ;
+    "ciphertext_len" : nat ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "nonce_len" : nat ;
+    "owner" : principal ;
+  }) ;
+  "fetchPrivateKv" : () -> (record {
+    "ciphertext_hex" : text ;
+    "key_version" : nat ;
+    "owner" : principal ;
+  }) ;
+  "derivePrivateKvKey" : (text, nat64) -> (record {
+    "context_label" : text ;
+    "encrypted_key_hex" : text ;
+    "input_label" : text ;
+    "key_version" : nat ;
+    "owner" : principal ;
+    "public_key_hex" : text ;
+  }) ;
+  "createSharedNote" : (text, text, text, text, nat64) -> (record {
+    "aad_len" : nat ;
+    "acl" : vec principal ;
+    "ciphertext_len" : nat ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "nonce_len" : nat ;
+    "owner" : principal ;
+  }) ;
+  "describeSharedNote" : (text) -> (record {
+    "aad_len" : nat ;
+    "acl" : vec principal ;
+    "ciphertext_len" : nat ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "nonce_len" : nat ;
+    "owner" : principal ;
+  }) ;
+  "grantSharedNoteAccess" : (text, principal) -> (record {
+    "aad_len" : nat ;
+    "acl" : vec principal ;
+    "ciphertext_len" : nat ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "nonce_len" : nat ;
+    "owner" : principal ;
+  }) ;
+  "revokeSharedNoteAccess" : (text, principal) -> (record {
+    "aad_len" : nat ;
+    "acl" : vec principal ;
+    "ciphertext_len" : nat ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "nonce_len" : nat ;
+    "owner" : principal ;
+  }) ;
+  "rotateSharedNoteKey" : (text, nat64) -> (record {
+    "aad_len" : nat ;
+    "acl" : vec principal ;
+    "ciphertext_len" : nat ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "nonce_len" : nat ;
+    "owner" : principal ;
+  }) ;
+  "deriveSharedNoteKey" : (text, text) -> (record {
+    "context_label" : text ;
+    "encrypted_key" : blob ;
+    "input_label" : text ;
+    "key_version" : nat ;
+    "note_id" : text ;
+    "owner" : principal ;
+    "public_key" : blob ;
+  }) ;
+};

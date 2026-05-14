@@ -48,10 +48,13 @@ const toIcpAccount = async (authClient: AuthClient): Promise<LocalAccount> => {
   });
 
   const actor = createActor(canisterId, { agent });
-  // 公開鍵が未生成だとgetEvmAddressは空を返すため、先に生成する
-  await actor.getNewPublicKey();
+  // getNewPublicKey で鍵を生成したあと getEvmAddress でアドレスを取得する（未生成のまま getEvmAddress するとキャニスターが reject する）
+  const publicKey = await actor.getNewPublicKey();
+  console.log('publicKey: ', publicKey);
   const rawAddress = await actor.getEvmAddress();
+  console.log('rawAddress: ', rawAddress);
   const address = (typeof rawAddress === 'string' ? rawAddress : String(rawAddress)).trim();
+  console.log('address: ', address);
   if (!address || address.length !== 42 || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
     throw new Error(
       `Invalid EVM address from canister: "${rawAddress}". ` +
