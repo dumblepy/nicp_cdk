@@ -243,7 +243,7 @@ deriveKey(transport_public_key: blob): async blob
 - sample canister は local replica 用に固定 transport public key を使う convenience 更新メソッドを持たせた。
 - この環境の local replica では `vetkd:Bls12_381_G2:key_1` が公開されていたため、サンプルの既定鍵名は `key_1` に合わせる。
 - テストは `tests/icp_network.nim` の `withIcpNetwork` を使って、各 example のローカルネットワークを起動・停止するように揃えた。
-- private KV の roundtrip は `private-kv-v1|owner=<principal>` / `kv:<principal>:value-key:v1` のラベルで導出し、JS helper では `@dfinity/vetkeys` を用いて encrypted VetKey と AES-GCM ciphertext を往復検証する。
+- private KV の roundtrip は `private-kv-v1|owner=<principal>` / `kv:<principal>:value-key:v1` のラベルで導出し、テストでは `tests/management_canister/vetkey_roundtrip_crypto.nim`（rustcrypto の BLS / HKDF / AES-GCM）で encrypted VetKey と AES-GCM ciphertext を往復検証する。
 
 ### 追加要件: 実用的な vetKeys ユースケーステスト
 

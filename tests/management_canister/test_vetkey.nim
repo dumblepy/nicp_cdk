@@ -8,6 +8,7 @@ discard """
 # - vetKD Candid tests: CDK の Candid エンコード／デコードが型どおりか（icp 不要）。
 # - vetKD integration tests: `icp` が PATH にあるときのみ。ローカル ICP 上の examples/vetkey
 #   キャニスターを CLI 経由で呼び、プライベート／共有ノートと ACL・エラー応答を確認する。
+#   Private KV 往復の client 側暗号は `vetkey_roundtrip_crypto.nim`（rustcrypto BLS / HKDF / AES-GCM）で行う。
 
 import std/unittest
 import std/osproc
@@ -21,6 +22,7 @@ import ../../src/nicp_cdk/ic_types/ic_principal
 import ../../src/nicp_cdk/ic_types/ic_record
 import ../../src/nicp_cdk/ic_types/candid_message/candid_encode
 import ../../src/nicp_cdk/ic_types/candid_message/candid_decode
+import ./vetkey_roundtrip_crypto
 
 const
   ICP_PATH = "icp"
@@ -235,10 +237,6 @@ proc vecNat8Literal(bytes: seq[uint8]): string =
   result.add(" } : vec nat8")
 
 
-proc shellQuotedText(value: string): string =
-  "'" & value.replace("'", "'\"'\"'") & "'"
-
-
 proc extractQuotedField(output, fieldName: string): string =
   let needle = fieldName & " = \""
   let start = output.find(needle)
@@ -247,116 +245,6 @@ proc extractQuotedField(output, fieldName: string): string =
   let valueEnd = output.find('"', valueStart)
   check valueEnd >= 0
   output[valueStart ..< valueEnd]
-
-
-const VetkeyJsHelperScript = """
-import { TransportSecretKey, VetKey } from '@dfinity/vetkeys';
-import { bls12_381 } from '@noble/curves/bls12-381';
-
-function hexToBytes(hex) {
-  let cleaned = hex.trim().replace(/^0x/i, '').replace(/\s+/g, '');
-  if (cleaned.length === 0) {
-    return new Uint8Array();
-  }
-  if (cleaned.length % 2 !== 0) {
-    throw new Error('hex string must have even length');
-  }
-  const bytes = new Uint8Array(cleaned.length / 2);
-  for (let i = 0; i < cleaned.length; i += 2) {
-    bytes[i / 2] = Number.parseInt(cleaned.slice(i, i + 2), 16);
-  }
-  return bytes;
-}
-
-function bytesToHex(bytes) {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-async function main() {
-  const mode = process.argv[2];
-  if (mode === 'generate') {
-    const transportSecret = TransportSecretKey.random();
-    console.log(`transport_secret_hex=${bytesToHex(transportSecret.serialize())}`);
-    console.log(`transport_public_hex=${bytesToHex(transportSecret.publicKeyBytes())}`);
-    return;
-  }
-
-  if (mode === 'encrypt' || mode === 'decrypt') {
-    const [transportSecretHex, encryptedKeyHex, payloadHex, domainSep] = process.argv.slice(3);
-    const transportSecret = TransportSecretKey.deserialize(hexToBytes(transportSecretHex));
-    const encryptedKeyBytes = hexToBytes(encryptedKeyHex);
-    const c1 = bls12_381.G1.ProjectivePoint.fromHex(encryptedKeyBytes.slice(0, 48));
-    const c3 = bls12_381.G1.ProjectivePoint.fromHex(encryptedKeyBytes.slice(48 + 96));
-    const sk = bls12_381.G1.normPrivateKeyToScalar(transportSecret.serialize());
-    const vetKey = new VetKey(c3.subtract(c1.multiply(sk)));
-    const derivedKeyMaterial = await vetKey.asDerivedKeyMaterial();
-    if (mode === 'encrypt') {
-      const plaintext = hexToBytes(payloadHex);
-      const ciphertext = await derivedKeyMaterial.encryptMessage(plaintext, domainSep);
-      console.log(`ciphertext_hex=${bytesToHex(ciphertext)}`);
-      return;
-    }
-
-    const ciphertext = hexToBytes(payloadHex);
-    const plaintext = await derivedKeyMaterial.decryptMessage(ciphertext, domainSep);
-    console.log(`plaintext_hex=${bytesToHex(plaintext)}`);
-    return;
-  }
-
-  throw new Error(`Unknown mode: ${mode}`);
-}
-
-main().catch((error) => {
-  console.error(error?.stack ?? String(error));
-  process.exit(1);
-});
-"""
-
-
-proc ensureVetkeyJsHelper(helperDir: string): string =
-  if not dirExists(helperDir):
-    createDir(helperDir)
-
-  let packageJsonPath = helperDir / "package.json"
-  let scriptPath = helperDir / "vetkey_roundtrip.mjs"
-  writeFile(packageJsonPath, """
-{
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@dfinity/vetkeys": "0.4.0"
-  }
-}
-""")
-  writeFile(scriptPath, VetkeyJsHelperScript)
-
-  let nodeModulesPath = helperDir / "node_modules" / "@dfinity" / "vetkeys"
-  if not dirExists(nodeModulesPath):
-    let (installOutput, installCode) = runIcpCommand(helperDir, "npm install --silent")
-    check installCode == 0
-    if installOutput.len > 0:
-      echo installOutput
-
-  scriptPath
-
-
-proc runVetkeyJsHelper(helperDir, mode: string, args: seq[string]): string =
-  let scriptPath = ensureVetkeyJsHelper(helperDir)
-  var command = "node " & shellQuotedText(scriptPath) & " " & shellQuotedText(mode)
-  for arg in args:
-    command.add(" ")
-    command.add(shellQuotedText(arg))
-  let (output, exitCode) = runIcpCommand(helperDir, command)
-  check exitCode == 0
-  output.strip()
-
-
-proc extractFieldValue(output, fieldName: string): string =
-  for line in output.splitLines:
-    let trimmed = line.strip()
-    if trimmed.startsWith(fieldName & "="):
-      return trimmed[(fieldName.len + 1)..^1]
-  raise newException(ValueError, "Field not found: " & fieldName & " in output: " & output)
 
 
 proc privateKvInputLabel(ownerPrincipal: string, keyVersion: uint64): string =
@@ -698,15 +586,12 @@ withRestartedIcpNetwork(VETKEY_DIR):
     test "Private KV roundtrip encrypts and decrypts by principal":
       # principal を key にした KV に、transport key で保護した vetKey を使って暗号化データを保存し、
       # canister から取り出した ciphertext を client 側で復号して元の平文と一致することを確認する。
-      let helperDir = getTempDir() / "vetkey-js-helper"
       let plaintext = "user secret payload for private kv"
       let plaintextBytes = textToBytes(plaintext)
       let plaintextHex = bytesToHex(plaintextBytes)
       let domainSep = "private-kv-v1"
 
-      let transportKeyOutput = runVetkeyJsHelper(helperDir, "generate", @[])
-      let transportSecretHex = extractFieldValue(transportKeyOutput, "transport_secret_hex")
-      let transportPublicHex = extractFieldValue(transportKeyOutput, "transport_public_hex")
+      let (transportSecretHex, transportPublicHex) = generateVetkeyTransportKeyPair()
 
       let deriveOutput = callCanisterSuccess(
         VETKEY_DIR,
@@ -724,18 +609,10 @@ withRestartedIcpNetwork(VETKEY_DIR):
       let encryptedKeyHex = extractQuotedField(deriveOutput, "encrypted_key_hex")
       check deriveOutput.contains(privateKvInput)
 
-      let ciphertextOutput = runVetkeyJsHelper(
-        helperDir,
-        "encrypt",
-        @[
-          transportSecretHex,
-          encryptedKeyHex,
-          plaintextHex,
-          domainSep
-        ]
+      let ciphertextBytes = vetkeyEncryptMessage(
+        transportSecretHex, encryptedKeyHex, plaintextBytes, domainSep
       )
-      let ciphertextHex = extractFieldValue(ciphertextOutput, "ciphertext_hex")
-      let ciphertextBytes = hexToBytes(ciphertextHex)
+      let ciphertextHex = bytesToHex(ciphertextBytes)
 
       discard callCanisterSuccess(
         VETKEY_DIR,
@@ -755,15 +632,11 @@ withRestartedIcpNetwork(VETKEY_DIR):
       let fetchedCiphertextHex = extractQuotedField(fetchedKvOutput, "ciphertext_hex")
       check fetchedCiphertextHex.toLowerAscii == ciphertextHex.toLowerAscii
 
-      let decryptOutput = runVetkeyJsHelper(
-        helperDir,
-        "decrypt",
-        @[
-          transportSecretHex,
-          encryptedKeyHex,
-          fetchedCiphertextHex,
-          domainSep
-        ]
+      let decryptedBytes = vetkeyDecryptMessage(
+        transportSecretHex,
+        encryptedKeyHex,
+        hexToBytes(fetchedCiphertextHex),
+        domainSep,
       )
-      let decryptedHex = extractFieldValue(decryptOutput, "plaintext_hex")
+      let decryptedHex = bytesToHex(decryptedBytes)
       check decryptedHex.toLowerAscii == plaintextHex.toLowerAscii
