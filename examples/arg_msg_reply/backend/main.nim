@@ -1,13 +1,12 @@
-import std/strutils
 import std/options
 import std/tables
 import std/sequtils  # mapItのために追加
-import ../../../../src/nicp_cdk
-import ../../../../src/nicp_cdk/ic_types/candid_types
-import ../../../../src/nicp_cdk/ic_types/candid_message/candid_encode
-import ../../../../src/nicp_cdk/ic_types/candid_funcs
-import ../../../../src/nicp_cdk/ic_types/ic_record
-import ../../../../src/nicp_cdk/ic0/ic0
+import ../../../src/nicp_cdk
+import ../../../src/nicp_cdk/ic_types/candid_types
+import ../../../src/nicp_cdk/ic_types/candid_message/candid_encode
+import ../../../src/nicp_cdk/ic_types/candid_funcs
+import ../../../src/nicp_cdk/ic_types/ic_record
+import ../../../src/nicp_cdk/ic0/ic0
 
 type
   SimpleStatus* {.pure.} = enum
