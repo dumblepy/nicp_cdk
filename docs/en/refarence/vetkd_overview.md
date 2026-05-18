@@ -1,452 +1,538 @@
-# vetKD Overview
+The following is an example of using the low-level vetKD API directly to obtain a per-user AES-GCM key in the browser. Communication and authentication with ICP use `@icp-sdk`; vetKey decryption, verification, and key derivation use the official `@dfinity/vetkeys`. In the ICP JS SDK, `@icp-sdk/core` is the package for talking to the IC, and `@icp-sdk/core/agent` is used to create actors. ([ICP JS SDK Docs][1]) Official vetKey examples also import `DerivedPublicKey`, `TransportSecretKey`, and `EncryptedVetKey` from `@dfinity/vetkeys`. ([internetcomputer.org][2])
 
-vetKD is a mechanism for generating canister-specific public keys and deriving keys using the `vetkd_public_key` and `vetkd_derive_key` methods of the Management Canister.
+## 1. Basic structure of vetKey
 
-## Key Points
+A vetKey is a key deterministically derived from the subnet’s threshold master key on ICP using these values. The same `key_id + canister_id + context + input` always yields the same vetKey. The official API states that the same inputs return the same key, and different `input` values produce arbitrarily many distinct keys. ([internetcomputer.org][2])
 
-- `vetkd_public_key` takes an `opt principal` for `canister_id`, `context`, and `key_id`, and returns a `public_key`.
-- `vetkd_derive_key` takes `input`, `context`, `transport_public_key`, and `key_id`, and returns an `encrypted_key`.
-- `vetkd_derive_key` requires cycles to be attached.
-- Use `test_key_1` for local development and `key_1` for mainnet / testnet.
-- It is safe to use a fixed value for `context` as an application domain separator.
+The management canister exposes these two APIs:
 
----
-
-## ICP vetKD API and Management Canister Call Structure
-
-The backend canister implementing vetKD generates encrypted keys by calling low-level APIs provided by the **ICP Management Canister**. Below are the two core APIs used in the backend implementation of `PrivateKvRoundtrip.tsx` and the design policies for using them safely.
-
-### Management Canister `vetkd_public_key`
-
-```
-Type: vetkd_public_key : (record { 
-  canister_id : opt principal; 
-  context : blob; 
-  key_id : record { curve : variant { bls12_381_g2 }; name : text } 
-}) -> (record { public_key : blob })
-```
-
-**Purpose**:  
-Retrieves the **public key** for a given combination of context and key ID. This is used for verifying the `encrypted_key` that the client will later decrypt with their transport secret key, and as input for HKDF.
-
-**Argument Responsibilities**:
-
-| Parameter | Usage | Example | Notes |
-|-----------|-------|---------|-------|
-| `canister_id` | Specify null. Targets the caller canister | `null` | Always null in this branch |
-| `context` | Fixed as an application domain separator. Include the caller principal if caller isolation is required | `UTF-8("private-kv-v1") ‖ caller.toCanonicalBlob()` | Determined by the backend canister. Not received from the client |
-| `key_id.curve` | Specification of the BLS curve | `#bls12_381_g2` | Immutable |
-| `key_id.name` | Key name (varies by environment) | `"key_1"` (mainnet), `"test_key_1"` (local test) | Changes with key rotation |
-
-**Return Value**:
-
-| Field | Content | Length | Usage |
-|-----------|---------|--------|-------|
-| `public_key` | Serialized form of a point in the BLS 12-381 G2 group | 96 bytes | Used by the client to verify `encrypted_key`. e.g., `VetKey.verifyIntegrity()` in `@dfinity/vetkeys` |
-
-**Cycles Cost**:  
-**0 cycles** (no attachment required).
-
-**Security Note**:  
-If multiple actors (principals) of the same canister use different `context`s, isolate them by including the caller principal in the context. Use a separate context for shared resources.
-
----
-
-### Management Canister `vetkd_derive_key`
-
-```
-Type: vetkd_derive_key : (record {
+```did
+vetkd_derive_key : (record {
   input : blob;
   context : blob;
   transport_public_key : blob;
-  key_id : record { curve : variant { bls12_381_g2 }; name : text }
-}) -> (record { encrypted_key : blob })
+  key_id : record { curve : vetkd_curve; name : text };
+}) -> (record { encrypted_key : blob });
+
+vetkd_public_key : (record {
+  canister_id : opt canister_id;
+  context : blob;
+  key_id : record { curve : vetkd_curve; name : text };
+}) -> (record { public_key : blob });
 ```
 
-**Purpose**:  
-Generates an encrypted key based on threshold secret sharing. Designed so that the client can decrypt it with their transport secret key without the canister ever seeing the secret.
+Meaning of each field:
 
-**Argument Responsibilities**:
+| Field                  |                     Who creates it | Secret? | Role                                                                                                                        |
+| ---------------------- | ---------------------------------: | -------: | ------------------------------------------------------------------------------------------------------------------------- |
+| `key_id`               |                            backend |       no | Which master key to use. Examples: local `dfx_test_key`, mainnet test `test_key_1`, production `key_1`. ([internetcomputer.org][2]) |
+| `context`              |                            backend |       no | Domain separating dapp, purpose, user, and scope of authority. In the example: `domain separator + caller principal`.                                                     |
+| `input`                |               frontend or backend |       no | Identifier for an individual key. Examples: `"note/default"`, `"file:<uuid>"`. Changing `input` within the same context yields another key.                                                  |
+| `transport_public_key` |                           frontend |       no | Ephemeral public key so only the frontend can decrypt the returned vetKey.                                                                                  |
+| `encrypted_key`        | ICP → backend → frontend | no (but ciphertext) | Not yet a usable key. Decrypt and verify on the frontend with `TransportSecretKey`.                                                                      |
+| `public_key`           | ICP → backend → frontend |       no | Public key used to verify that `encrypted_key` is the correct vetKey.                                                                                  |
+| `vetKey`               |                    frontend only |      yes | Root key from which to derive AES keys, etc. Do not send to the backend.                                                                                            |
 
-| Parameter | Usage | Example | Notes |
-|-----------|-------|---------|-------|
-| `input` | Label identifying the resource. The same `input` generates the same key | `UTF-8("kv:") ‖ resource_id_bytes ‖ UTF-8(":value-key:v1")` | Can be accepted from the client or generated on the backend from a resource ID. For key rotation, change the version (e.g., `v2`) to get a new secret |
-| `context` | Same as `vetkd_public_key`. Application domain separator | Same as above | Must be consistent with `vetkd_public_key` |
-| `transport_public_key` | Temporary ECDH public key (BLS 12-381 G1) generated by the client | 48 bytes | `TransportSecretKey.random()` → `.publicKeyBytes()` on the client browser side |
-| `key_id.curve`, `key_id.name` | Same as above | Same as above | Same as above |
-
-**Return Value**:
-
-| Field | Content | Length | Usage |
-|-----------|---------|--------|-------|
-| `encrypted_key` | Encrypted byte sequence constructed by threshold secret sharing | 192 bytes | Decrypted by the client with `transport_secret_key` to obtain raw VetKey bytes. The plaintext secret never reaches the canister |
-
-**Cycles Cost**:  
-**Required**. The backend canister must attach sufficient cycles using **`ic0.call_cycles_add128`** when calling.
-
-Official estimates (measurable on local replica):
-
-- `test_key_1`: ≈ 10 billion cycles
-- `key_1`: ≈ 26 billion cycles
-
-In implementation, it is recommended to attempt dynamic estimation with `ic0.cost_vetkd_derive_encrypted_key(...)` and use a fallback with a 20% margin based on the above if it fails or returns 0 locally (see branch rules).
-
-**Security Note**:  
-1. The canister returns the `encrypted_key` as-is to the client. It only saves metadata (version / ACL) without plaintexting it.
-2. The client can only decrypt with the returned `encrypted_key` and their own `transport_secret_key`.
-3. The same caller + same `input` + same `context` returns the same `encrypted_key` (deterministic). This can be used for roundtrip verification and consistency in encryption/decryption.
+What matters is that the backend canister **never sees plaintext or the vetKey itself**. The frontend generates a temporary transport key pair, sends only the public key to the canister, and decrypts the returned `encrypted_key` on the frontend. Official docs describe this flow: the transport public key yields an encrypted vetKey that only the frontend can decrypt. ([internetcomputer.org][2])
 
 ---
 
-### Cycles Handling within the Backend Canister
+## 2. Backend: Motoko
 
-Attaching cycles is mandatory for `vetkd_derive_key`. The backend follows this flow:
+### `mops.toml`
 
-1. **Capture caller principal at the beginning of the update function** (to avoid issues where the reader changes after an await).
-2. **Construct `context`** (from caller principal and application name).
-3. **Determine `input`** (from resource ID and version).
-4. **Estimate cycles**:
-   - Calculate with `ic0_cost_vetkd_derive_encrypted_key` for release builds with the flag enabled.
-   - Fallback based on key name if 0 is returned locally.
-5. **Prevent overflow**: Safely calculate with addCap / mulCap.
-6. **Attach with `ic0.call_cycles_add128(0, estimatedCycles)`**.
-7. **Call `vetkd_derive_key` of the Management Canister** (async callback).
-8. **Return the resulting `encrypted_key` as-is to the client**.
+```toml
+[dependencies]
+base = "0.16.0"
+ic-vetkeys = "0.1.0"
+```
+
+Pin versions to match your project’s Motoko / mops setup.
+
+### `src/backend/Main.mo`
+
+```motoko
+import Array "mo:base/Array";
+import Blob "mo:base/Blob";
+import HashMap "mo:base/HashMap";
+import ManagementCanister "mo:ic-vetkeys/ManagementCanister";
+import Nat8 "mo:base/Nat8";
+import Principal "mo:base/Principal";
+import Text "mo:base/Text";
+
+actor class Backend() {
+
+  // Domain separator for this dapp / use case.
+  // Must be app-specific so keys do not collide across purposes.
+  let DOMAIN_SEPARATOR : [Nat8] =
+    Blob.toArray(Text.encodeUtf8("my-private-notes-v1"));
+
+  // Example: store one encrypted note per user.
+  // Only ciphertext goes here. Never store plaintext.
+  let encryptedNotes =
+    HashMap.HashMap<Principal, Blob>(10, Principal.equal, Principal.hash);
+
+  // local dfx: "dfx_test_key".
+  // mainnet test: "test_key_1".
+  // production: "key_1".
+  private func keyId() : ManagementCanister.VetKdKeyid {
+    {
+      curve = #bls12_381_g2;
+      name = "dfx_test_key";
+    }
+  };
+
+  // In this example, caller principal is part of context.
+  // So the same input yields a different vetKey per user.
+  private func context(caller : Principal) : Blob {
+    let callerBytes = Blob.toArray(Principal.toBlob(caller));
+
+    // [domain length] || domain || caller principal bytes
+    // Include domain length to avoid ambiguity from naive concatenation.
+    let flattened = Array.flatten<Nat8>([
+      [Nat8.fromNat(DOMAIN_SEPARATOR.size())],
+      DOMAIN_SEPARATOR,
+      callerBytes,
+    ]);
+
+    Blob.fromArray(flattened);
+  };
+
+  // Receives transport public key and input from the frontend.
+  // Return value is the encrypted vetKey—not an AES key yet.
+  public shared ({ caller }) func vetkd_derive_key(
+    transportKey : Blob,
+    input : Blob,
+  ) : async Blob {
+    await ManagementCanister.vetKdDeriveKey(
+      input,
+      context(caller),
+      keyId(),
+      transportKey,
+    )
+  };
+
+  // Public key for the frontend to verify the encrypted vetKey.
+  // Must use the same context / key_id as derive_key.
+  public shared ({ caller }) func vetkd_public_key() : async Blob {
+    await ManagementCanister.vetKdPublicKey(
+      null,
+      context(caller),
+      keyId(),
+    )
+  };
+
+  // Store encrypted data.
+  public shared ({ caller }) func put_encrypted_note(ciphertext : Blob) : async () {
+    encryptedNotes.put(caller, ciphertext);
+  };
+
+  // Fetch encrypted data.
+  public shared query ({ caller }) func get_encrypted_note() : async ?Blob {
+    encryptedNotes.get(caller)
+  };
+}
+```
+
+This `context(caller)` is the core of access control. It is important **not** to accept `context` from the frontend. Using the caller’s principal as authenticated information from the backend avoids design mistakes such as “Alice derives Bob’s key.” Official docs explain that putting the caller identity in `context` makes the vetKey specific to that caller and `input`, so only that caller can obtain and decrypt it. ([internetcomputer.org][2])
 
 ---
 
-### Division of Responsibilities between Backend and Client (Security Model)
+## 3. Candid interface
 
-| Item | Backend Canister | Client Browser |
-|------|-------------------|-----------------|
-| Verify caller principal | ✓ Reads caller and includes in context | ✗ (Browser trusts its own principal) |
-| Determine context | ✓ Determined from domain separator + caller | ✗ Does not receive context |
-| Generate input | △ From resource ID or from client (verify if from client) | △ Propose resource ID |
-| Manage transport secret key | ✗ **Does not see** transport secret; only receives public key | ✓ Browser memory only; not sent to canister |
-| Decrypt encrypted_key | ✗ Does not decrypt; only saves metadata | ✓ Decrypts with transport secret |
-| Derive symmetric key (HKDF) | ✗ Does not perform | ✓ Performed from VetKey |
-| Plaintext encryption/decryption | ✗ Does not perform | ✓ AES-256-GCM |
-| ACL / Access Control | ✓ Verifies relationship between caller and resource | ✗ (Determined by canister) |
+Conceptually:
+
+```did
+service : {
+  vetkd_derive_key : (blob, blob) -> (blob);
+  vetkd_public_key : () -> (blob);
+
+  put_encrypted_note : (blob) -> ();
+  get_encrypted_note : () -> (opt blob) query;
+}
+```
+
+On the TypeScript side, `blob` is usually represented as `Uint8Array` or `number[]`. The frontend code below normalizes to `Uint8Array`.
 
 ---
 
-## Private KV Roundtrip (Flow of `PrivateKvRoundtrip.tsx`)
+## 4. Frontend: TypeScript + `@icp-sdk`
 
-In `runRoundtrip` (approximately lines 58–164) of `examples/vetkey/frontend/app/src/components/PrivateKvRoundtrip.tsx`, plaintext encrypted with materials derived from vetKey is saved to and retrieved from a Private KV **for each caller (principal logged in via Internet Identity)**. Key generation, encryption, and decryption are performed in the browser, while the **sample backend canister** is only requested to retrieve key derivation results and store/fetch blobs.
+### install
 
-The following **example** shows values that appeared in `console.log` during a single execution. Keys, principals, and ciphertexts **change with each execution**.
-
-### Prerequisites (UI/Input)
-
-- **key version**: The input string is converted to a `BigInt` referred to as `kv`. This value is passed as the second argument (`nat64`) to `derivePrivateKvKey` and `storePrivateKv`.  
-  **Example**: `1` in the UI → `kv` is `1n`.
-- **Plaintext**: Converted to a `Uint8Array` using `TextEncoder` before being passed to subsequent encryption processes.  
-  **Example**: String `hello world` → Byte sequence hex is `68656c6c6f20776f726c64`.
-
-### Step 0: Generation of Transport Key Material (No Canister Call)
-
-At this stage, **no canister is called**. The browser side prepares strings and byte sequences to be passed to subsequent steps.
-
-**0-1 (Library `@dfinity/vetkeys`)** `TransportSecretKey.random()`
-
-- **Arguments**: None.
-- **Return Value**: A temporary secret key object for transport (hereafter referred to as `transportSecret`).
-
-**0-2 (Library)** `transportSecret.serialize()`
-
-- **Arguments**: None.
-- **Return Value**: `Uint8Array` of the secret key.
-
-**0-3 (App)** Convert byte sequence to hex string
-
-- **Input**: Byte sequence from 0-2.
-- **Output**: `transportSecretHex` (held by the component until decryption; **not sent to the canister**).  
-  **Example**: `5783ba99bebd52ddc5b571f7b9a614f4eca22bb15d72158531c65028101f62bc` (hex of a 32-byte secret key).
-
-**0-4 (Library)** `transportSecret.publicKeyBytes()`
-
-- **Arguments**: None.
-- **Return Value**: `Uint8Array` of the transport public key.
-
-**0-5 (App)** Convert byte sequence to hex string
-
-- **Input**: Byte sequence from 0-4.
-- **Output**: `transportPublicHex` (used only as the **first argument for the canister in Step 1**).  
-  **Example**: `8260f5058e4f416ae81c72ab77e56cd0e5a957933217a7de253bf89375c3ff4839e7536ecba6bdc163b7e6ce85bc062f` (in this log example, the result of `trim().toLowerCase()` is the same string).
-
-### Step 1: `derivePrivateKvKey` (Canister)
-
-**Candid**: `derivePrivateKvKey : (text, nat64) -> (record { ... })`
-
-**1 Canister Call**
-
-- **1st Argument (`text`)**: `transportPublicHex` obtained in Step 0-5 (hex of the transport public key).  
-- **2nd Argument (`nat64`)**: `kv` (key version).  
-
-```
-transportPublicHex: 8260f5058e4f416ae81c72ab77e56cd0e5a957933217a7de253bf89375c3ff4839e7536ecba6bdc163b7e6ce85bc062f
-kv: 1n
+```bash
+npm install @icp-sdk/core @icp-sdk/auth @dfinity/vetkeys
 ```
 
-**Main fields used in this roundtrip from the return value (record)**
-
-| Field | Meaning |
-|------------|------|
-| `owner` | Principal of the KV owner (usually the caller) |
-| `context_label` | Text representation of the context used for key derivation |
-| `encrypted_key_hex` | Hex of the blob corresponding to `encrypted_key` from `vetkd_derive_key`. This becomes input for subsequent browser-side processing |
-
-```
-owner: krzlp-frl5q-f7xu4-4csnc-i5p7y-xuhti-si6hg-ulr7i-aafku-p4a6i-eqe
-context_label: private-kv-v1|owner=krzlp-frl5q-f7xu4-4csnc-i5p7y-xuhti-si6hg-ulr7i-aafku-p4a6i-eqe
-# Total is about 192 bytes = 384 hex characters
-encrypted_key_hex: ADAC5DEB3BD35CF015CAB21C69F56A475EBBBA453EF2B0B3D8...083
-```
-
-The component verifies whether the string constructed from the constant `PRIVATE_KV_DOMAIN_SEP` (`"private-kv-v1"`) and `owner.toString()` matches **`context_label`**, and throws an exception if they do not match.
-
-**Backend Implementation Behavior**
-
-The backend implementation of `derivePrivateKvKey` (update function of the backend canister) performs the following processes:
-
-1. **Capture caller principal** (equivalent to `msg_caller`).
-   - Since an `await` occurs in subsequent steps, it is captured early.
-
-2. **Construct input**
-   - `input = UTF-8("kv:") ‖ caller.toCanonicalBlob() ‖ UTF-8(":value-key:v") ‖ key_version.toLEB128()`
-   - Same caller + same key_version results in the same input → same encrypted_key.
-
-3. **Construct context**
-   - `context = UTF-8("private-kv-v1") ‖ caller.toCanonicalBlob()`
-   - Guarantees isolation per caller.
-
-4. **Parse transport_public_key**
-   - Converts the hex received from the client back to a 48-byte sequence.
-
-5. **Estimate cycles**
-   - Attempts dynamic estimation with `ic0_cost_vetkd_derive_encrypted_key()`.
-   - Fallback to 20% margin of `key_1` cost if it fails or returns 0 locally.
-
-6. **Attach cycles with `ic0.call_cycles_add128()`**
-   - Prepares necessary cycles for `vetkd_derive_key` call to the Management Canister.
-
-7. **Call `vetkd_derive_key`** → **await**
-   - Passes `input`, `context`, `transport_public_key`, and `key_id` to the Management Canister.
-   - Management Canister returns `encrypted_key`.
-   - **Canister side does not decrypt `encrypted_key`**. It does not see the plaintext secret.
-
-8. **Return response to client**
-   - Converts `encrypted_key` to hex and returns as `encrypted_key_hex`.
-   - Also returns `context_label` (for debugging).
-   - Also returns `owner` principal.
-
-**Cycles Breakdown (Cost in this step)**
-
-| Target | Cost |
-|------|--------|
-| `vetkd_derive_key` cycles add | ≈ 26B cycles (key_1) + 20% margin ≈ 31.2B cycles |
-| Backend canister update processing (ICP standard cost) | ≈ 2-5M cycles |
-| **Total** | ≈ 31.2B + several M cycles |
-
-This cost is paid by the caller (assuming the backend canister has sufficient balance).
-
-### Step 2: Encryption of Plaintext (No Canister Call)
-
-At this stage, **no canister is called**. The inputs are (a) `transportSecretHex` from Step 0-3, (b) `encrypted_key_hex` from Step 1, (c) the `Uint8Array` of the plaintext prepared in the prerequisites, and (d) a string for domain separation (in this example, `"private-kv-v1"`).
-
-```
-transportSecretHex: 0e89f1ff375a4e16ceabf981e9e0613b09ad50b90dec589feb170598ea24275f
-plaintextHex: 7573657220736563726574207061796c6f616420666f722070726976617465206b76
-domainSep: private-kv-v1
-```
-
-**2-1 (App)** Convert hex string back to byte sequence
-
-- **Input**: `transportSecretHex`.  
-  **Example**: `0e89f1ff375a4e16ceabf981e9e0613b09ad50b90dec589feb170598ea24275f`.
-- **Output**: Secret key byte sequence.
-
-**2-2 (Library `@dfinity/vetkeys`)** `TransportSecretKey.deserialize(...)`
-
-- **Arguments**: Byte sequence from 2-1.
-- **Return Value**: A secret key object equivalent to `transportSecret`.
-
-**2-3 (App)** Convert hex string back to byte sequence
-
-- **Input**: `encrypted_key_hex` from Step 1.  
-  **Example**: The long hex including the start and end shown in Step 1 (about 384 characters total).
-- **Output**: `encrypted_key_bytes` (typically 192 bytes, with a layout of 48B start, 96B middle, and 48B end).
-
-**2-4 (Library `@noble/curves`)** `bls12_381.G1.ProjectivePoint.fromHex` (twice)
-
-- **Arguments**: The first 48 bytes and the **last 48 bytes** of `encrypted_key_bytes` (the middle 96 bytes are skipped).
-- **Return Value**: Points `c1` and `c3` on the curve.
-
-**2-5 (Library)** `transportSecret.serialize()` and `bls12_381.G1.normPrivateKeyToScalar(...)`
-
-- **Input**: Serial byte sequence of the transport secret key.
-- **Output**: Scalar `sk`.
-
-**2-6 (Library `@noble/curves`)** Point `multiply` / `subtract`
-
-- **Input**: `c1`, `c3`, `sk`.
-- **Output**: Point `c3 - c1 * sk` (point for VetKey).
-
-**2-7 (Library `@dfinity/vetkeys`)** Construct `VetKey`
-
-- **Arguments**: Point from 2-6.
-- **Return Value**: `VetKey` instance.
-
-**2-8 (Library `@dfinity/vetkeys`)** `asDerivedKeyMaterial()` (`await`)
-
-- **Arguments**: None (receiver is `VetKey` from 2-7).
-- **Return Value**: An object that can carry the raw byte sequence of VetKey as IKM into Web Crypto's HKDF.
-
-**2-9 (Library `@dfinity/vetkeys` + Web Crypto)** `encryptMessage(plaintext, domainSep)`
-
-- **Arguments**: `Uint8Array` of the plaintext, domain separation string `domainSep` (in this example, `"private-kv-v1"`). The UTF-8 of `domainSep` is used as **HKDF `info`**, and is **not AES-GCM AAD** (conforming to the `@dfinity/vetkeys` 0.4.x implementation).
-- **Return Value**: A single `Uint8Array` consisting of **`IV (12 bytes) ‖ AES-256-GCM ciphertext and authentication tag`**.  
-  **Example**: `Uint8Array` of length 62, hex is `63f402c2dd2b99290765c8b7eafb2a2f254c87b8475ac46ccca6aa0d1a90c7b4499e5b2c7ca08d990cd5c60b3fe86477620caccdfaa7cd937e39d3ef6435` (12 + 34 + 16 bytes).
-
-**2-10 (App)** Convert ciphertext byte sequence to hex string
-
-- **Input**: `Uint8Array` from 2-9.  
-  **Example**: `63f402c2dd2b99290765c8b7eafb2a2f254c87b8475ac46ccca6aa0d1a90c7b4499e5b2c7ca08d990cd5c60b3fe86477620caccdfaa7cd937e39d3ef6435`.
-- **Output**: Hex for subsequent display and comparison (passed to `storePrivateKv` **as a byte sequence**).
-
-### Step 3: `storePrivateKv` (Canister)
-
-**Candid**: `storePrivateKv : (blob, nat64) -> (record { ... })`
-
-**1 Canister Call**
-
-- **1st Argument (`blob`)**: Ciphertext byte sequence obtained in Step 2-9.  
-  **Example**: `Uint8Array` with the same content as the 62 bytes in Step 2-9.
-- **2nd Argument (`nat64`)**: `kv`.  
-  **Example**: `1n`.
-
-**Return Value**: Record of metadata (in this minimal roundtrip, it mainly serves to confirm that "saving was successful").
-
-**Backend Implementation Behavior**
-
-The backend implementation of `storePrivateKv` performs the following processes:
-
-1. **Capture caller principal** (at the beginning of the update function).
-2. **Receive ciphertext blob** (created by the client, type `blob`).
-3. **Receive key_version** (specified by the client, type `nat64`).
-4. **Save to internal canister storage**
-   - Key: Combination of `(caller_principal, key_version)`.
-   - Value: `{ ciphertext: blob, owner: principal, key_version: nat64, ...metadata }`.
-5. **Return response** (success notification).
-
-Notes:
-- The canister **does not decrypt** the ciphertext. It saves it as a blob.
-- ACL or ownership checks are not required at this point (assuming the caller is a legitimate principal).
-- Cycles cost: Canister store operation (ICP standard cost, several M cycles).
-
-### Step 4: `fetchPrivateKv` (Canister)
-
-**Candid**: `fetchPrivateKv : () -> (record { ciphertext_hex: text; key_version: nat; owner: principal; })`
-
-**1 Canister Call**
-
-- **Arguments**: None (reads the caller's KV).
-
-**Return Value**
-
-- **`ciphertext_hex`**: Hex string of the stored ciphertext.  
-  **Example**: `63F402C2DD2B99290765C8B7EAFB2A2F254C87B8475AC46CCC…08D990CD5C60B3FE86477620CACCDFAA7CD937E39D3EF6435` (example returned with mixed case).
-- Others: `key_version`, `owner`.
-
-The component compares the fetched hex normalized to lowercase with the lowercase version of the hex obtained in Step 2-10, and throws an exception if they do not match.  
-**Example**: `fetchedCiphertextHexLower` is `63f402c2dd2b99290765c8b7eafb2a2f254c87b8475ac46ccca6aa0d1a90c7b4499e5b2c7ca08d990cd5c60b3fe86477620caccdfaa7cd937e39d3ef6435`, which matches the hex (lowercase) from Step 2-10.
-
-**Backend Implementation Behavior**
-
-The backend implementation of `fetchPrivateKv` performs the following processes:
-
-1. **Capture caller principal** (at the beginning of the query/update function).
-2. **Read from canister storage** with key `(caller_principal, latest key_version)` (or version specified by argument).
-   - Returns error or empty response if not found.
-
-3. **Retrieve ciphertext and metadata**
-   - `{ ciphertext_hex: text, owner: principal, key_version: nat64, ... }`.
-   - Converts ciphertext to hex and returns it.
-
-4. **Return response**
-
-Notes:
-- `fetchPrivateKv()` appears to be a **query without arguments** in this sample (no arguments from the component side), but the backend canister implementation implicitly captures the caller and returns the caller's latest KV.
-- If you want to read an older version, a design like `fetchPrivateKvByVersion(key_version: nat64)` could be added.
-- Cycles cost: Canister read operation (0 if query, standard cost if update).
-
-### Step 5: Decryption (No Canister Call)
-
-**No canister is called**. The inputs are (a) `transportSecretHex` from Step 0-3, (b) `encrypted_key_hex` from Step 1, (c) the byte sequence converted from `ciphertext_hex` in Step 4, and (d) the same `domainSep` as in Step 2.
-
-**Example**: `transportSecretHex` is `0e89f1ff375a4e16ceabf981e9e0613b09ad50b90dec589feb170598ea24275f`, `ciphertext_hex` is the byte sequence from the uppercase hex in Step 4, and `domainSep` is `private-kv-v1`.
-
-**5-1 to 5-8**  
-Following the same order as Steps **2-1 to 2-8**, the same `transportSecretHex` and `encrypted_key_hex` lead to the same type of object (containing HKDF IKM) as in Step 2-8.
-
-**5-9 (Library `@dfinity/vetkeys` + Web Crypto)** `decryptMessage(ciphertext, domainSep)`
-
-- **Arguments**: Ciphertext byte sequence obtained in Step 4 (interpreting the first 12 bytes as IV and the rest as GCM body + tag), `domainSep`.
-- **Return Value**: `Uint8Array` of the plaintext.  
-  **Example (Log)**: `decryptedBytesHex` is `7573657220736563726574207061796c6f616420666f722070726976617465206b76` (matches `plaintextHex` before encryption), length 34 bytes.
-
-**5-10 (Standard Browser)** `TextDecoder`
-
-- **Input**: Byte sequence from 5-9.
-- **Output**: UTF-8 string. The component compares this with the input plaintext.  
-  **Example (Log)**: `decryptedBytesUtf8` is `user secret payload for private kv`.
-
----
-
-### Key Points of Symmetric Encryption (Inside `encryptMessage` / `decryptMessage` in the library)
-
-| Item | Content |
-|------|---------|
-| IKM | Raw byte sequence of VetKey (corresponding to 48 bytes of BLS representation) |
-| Key Derivation | HKDF (SHA-256), empty salt, `info` = UTF-8 of `domainSep`, AES-256-GCM 256 bit |
-| Format | Ciphertext is **12-byte IV + GCM output (including tag)** |
-
-### Process Flow (Summary Diagram)
-
-```mermaid
-sequenceDiagram
-  participant B as Browser
-  participant C as Backend Canister
-  B->>B: Transport Key (TransportSecretKey series)
-  B->>C: derivePrivateKvKey(transportPublicHex, kv)
-  C-->>B: encrypted_key_hex, context_label, owner, ...
-  B->>B: Restore VetKey with encrypted_key + transport secret key and encrypt with AES-GCM
-  B->>C: storePrivateKv(ciphertext, kv)
-  C-->>B: Metadata record
-  B->>C: fetchPrivateKv()
-  C-->>B: ciphertext_hex, ...
-  B->>B: Verify hex match
-  B->>B: decryptMessage with same materials (AES-GCM decryption)
+`@icp-sdk/auth` can be used for Internet Identity authentication. The official quick start imports `AuthClient` from `@icp-sdk/auth/client` and `HttpAgent` from `@icp-sdk/core/agent`. ([ICP JS SDK Docs][3])
+
+### `vetkeyClient.ts`
+
+```ts
+import { Actor, HttpAgent } from "@icp-sdk/core/agent";
+import { Principal } from "@icp-sdk/core/principal";
+import { IDL } from "@icp-sdk/core/candid";
+import { AuthClient } from "@icp-sdk/auth/client";
+
+import {
+  DerivedPublicKey,
+  EncryptedVetKey,
+  TransportSecretKey,
+  VetKey,
+} from "@dfinity/vetkeys";
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+type BackendActor = {
+  vetkd_derive_key: (
+    transportKey: Uint8Array,
+    input: Uint8Array,
+  ) => Promise<Uint8Array | number[]>;
+
+  vetkd_public_key: () => Promise<Uint8Array | number[]>;
+
+  put_encrypted_note: (ciphertext: Uint8Array) => Promise<void>;
+
+  get_encrypted_note: () => Promise<[] | [Uint8Array | number[]]>;
+};
+
+const idlFactory = ({ IDL }: { IDL: typeof import("@icp-sdk/core/candid").IDL }) =>
+  IDL.Service({
+    vetkd_derive_key: IDL.Func(
+      [IDL.Vec(IDL.Nat8), IDL.Vec(IDL.Nat8)],
+      [IDL.Vec(IDL.Nat8)],
+      [],
+    ),
+    vetkd_public_key: IDL.Func(
+      [],
+      [IDL.Vec(IDL.Nat8)],
+      [],
+    ),
+    put_encrypted_note: IDL.Func(
+      [IDL.Vec(IDL.Nat8)],
+      [],
+      [],
+    ),
+    get_encrypted_note: IDL.Func(
+      [],
+      [IDL.Opt(IDL.Vec(IDL.Nat8))],
+      ["query"],
+    ),
+  });
+
+function asUint8Array(value: Uint8Array | number[]): Uint8Array {
+  return value instanceof Uint8Array ? value : Uint8Array.from(value);
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+export async function createBackendActor(params: {
+  backendCanisterId: string;
+  network: "local" | "ic";
+}): Promise<BackendActor> {
+  const authClient = new AuthClient({
+    identityProvider:
+      params.network === "ic"
+        ? "https://id.ai/authorize"
+        : "http://id.ai.localhost:8000",
+  });
+
+  if (!authClient.isAuthenticated()) {
+    await authClient.signIn();
+  }
+
+  const identity = await authClient.getIdentity();
+
+  const agent = await HttpAgent.create({
+    identity,
+    host:
+      params.network === "ic"
+        ? "https://icp-api.io"
+        : "http://127.0.0.1:4943",
+  });
+
+  // Fetch root key on local replica.
+  // Not needed on mainnet—do not call unconditionally on mainnet.
+  if (params.network === "local") {
+    await agent.fetchRootKey();
+  }
+
+  return Actor.createActor<BackendActor>(idlFactory, {
+    agent,
+    canisterId: Principal.fromText(params.backendCanisterId),
+  });
+}
 ```
 
 ---
 
-## Big Picture of Management Canister Calls
+## 5. Obtaining a vetKey and turning it into an AES key
 
-In the Private KV roundtrip, **calls to the Management Canister occur only in Step 1**.
+The flow has four steps:
 
-| Step | Backend Call | Management Canister Call | Remarks |
-|---------|----------------|----------------------------|------|
-| 0 | ✗ | ✗ | Browser only, transport key generation |
-| 1: `derivePrivateKvKey` | ✓ (update) | ✓ `vetkd_derive_key` + cycles add | **Only in this step** |
-| 2 | ✗ | ✗ | Browser only, encryption |
-| 3: `storePrivateKv` | ✓ (update) | ✗ | Only saving the blob |
-| 4: `fetchPrivateKv` | ✓ (query/update) | ✗ | Only reading the blob |
-| 5 | ✗ | ✗ | Browser only, decryption |
+1. The frontend creates a temporary transport secret key with `TransportSecretKey.random()`.
+2. Send `transportSecretKey.publicKeyBytes()` and `input` to the backend.
+3. The backend calls the management canister’s `vetkd_derive_key` and returns `encrypted_key`.
+4. The frontend fetches `vetkd_public_key` and recovers the vetKey with `encrypted_key.decryptAndVerify(...)`.
 
-**Important**: The backend canister is responsible for calling `vetkd_derive_key` of the Management Canister, attaching cycles, and processing the response. The client browser does not communicate directly with the Management Canister.
+The official TypeScript example follows this order: `TransportSecretKey.random()`, `transportSecretKey.publicKeyBytes()`, `vetkd_derive_key(...)`, `DerivedPublicKey.deserialize(...)`, `decryptAndVerify(...)`. ([internetcomputer.org][2])
 
-## References
+```ts
+export async function getVetKey(
+  backend: BackendActor,
+  inputLabel: string,
+): Promise<VetKey> {
+  // input is a byte string naming which key you want.
+  // Examples: "note/default", "note/123", "file:<uuid>"
+  const input = textEncoder.encode(inputLabel);
 
-- [Management Canister / vetKD](https://docs.internetcomputer.org/references/management-canister#vetkd-verifiable-encrypted-threshold-key-derivation)
-- [@dfinity/vetkeys (npm)](https://www.npmjs.com/package/@dfinity/vetkeys)
+  // Ephemeral secret kept only inside the frontend.
+  const transportSecretKey = TransportSecretKey.random();
+
+  // Only the transport public key goes to the backend.
+  const encryptedVetKeyBytesRaw = await backend.vetkd_derive_key(
+    transportSecretKey.publicKeyBytes(),
+    input,
+  );
+
+  const encryptedVetKeyBytes = asUint8Array(encryptedVetKeyBytesRaw);
+  const encryptedVetKey = new EncryptedVetKey(encryptedVetKeyBytes);
+
+  // Public key for the same context / key_id as derive_key.
+  const publicKeyBytesRaw = await backend.vetkd_public_key();
+  const publicKey = DerivedPublicKey.deserialize(asUint8Array(publicKeyBytesRaw));
+
+  // Decrypt the encrypted vetKey and verify it matches the intended input.
+  const vetKey = encryptedVetKey.decryptAndVerify(
+    transportSecretKey,
+    publicKey,
+    input,
+  );
+
+  return vetKey;
+}
+
+export async function aesKeyFromVetKey(vetKey: VetKey): Promise<CryptoKey> {
+  // 32 bytes for AES-256.
+  // domain separator separates “what kind of key derived from this vetKey”.
+  const rawAesKey = vetKey.deriveSymmetricKey(
+    "my-private-notes-v1/aes-gcm",
+    32,
+  );
+
+  return crypto.subtle.importKey(
+    "raw",
+    rawAesKey,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+```
+
+`VetKey.deriveSymmetricKey(domainSep, outputLength)` derives a symmetric key of the given length from the vetKey. Official Typedoc notes that `domainSep` should be unique and include app name and purpose. ([Dfinity Vetkeys][4])
+
+---
+
+## 6. Encrypting and storing on the canister
+
+```ts
+export async function saveEncryptedNote(
+  backend: BackendActor,
+  plaintext: string,
+): Promise<void> {
+  // Same inputLabel lets the same user recover the same vetKey later.
+  // context includes caller principal, so other users get different keys.
+  const vetKey = await getVetKey(backend, "note/default");
+  const aesKey = await aesKeyFromVetKey(vetKey);
+
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintextBytes = textEncoder.encode(plaintext);
+
+  const ciphertextBuffer = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv,
+    },
+    aesKey,
+    plaintextBytes,
+  );
+
+  const ciphertext = new Uint8Array(ciphertextBuffer);
+
+  // IV is needed for decryption, so store IV || ciphertext.
+  const payload = concatBytes(iv, ciphertext);
+
+  await backend.put_encrypted_note(payload);
+}
+```
+
+At this point the canister only stores `payload = iv || ciphertext`. Because the canister never knows the AES key or plaintext, reading state does not reveal note contents. EncryptedMaps documentation similarly stresses encrypting and decrypting on the frontend while the canister only sees data encrypted under keys it does not know. ([ICP Developer Docs][5])
+
+---
+
+## 7. Loading and decrypting
+
+```ts
+export async function loadEncryptedNote(
+  backend: BackendActor,
+): Promise<string | null> {
+  const maybePayload = await backend.get_encrypted_note();
+
+  if (maybePayload.length === 0) {
+    return null;
+  }
+
+  const payload = asUint8Array(maybePayload[0]);
+
+  const iv = payload.slice(0, 12);
+  const ciphertext = payload.slice(12);
+
+  const vetKey = await getVetKey(backend, "note/default");
+  const aesKey = await aesKeyFromVetKey(vetKey);
+
+  const plaintextBuffer = await crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv,
+    },
+    aesKey,
+    ciphertext,
+  );
+
+  return textDecoder.decode(plaintextBuffer);
+}
+```
+
+You must use the same `inputLabel = "note/default"` here. Even a one-byte difference in `input` yields a different vetKey.
+
+---
+
+## 8. What to send, what you get back, and how to use it
+
+### When encrypting and saving
+
+```ts
+await saveEncryptedNote(backend, "secret memo");
+```
+
+Internally the values passed are:
+
+```ts
+input = utf8("note/default")
+transport_public_key = transportSecretKey.publicKeyBytes()
+```
+
+The backend forwards them to the management canister as:
+
+```motoko
+ManagementCanister.vetKdDeriveKey(
+  input,
+  context(caller),
+  keyId(),
+  transportKey,
+)
+```
+
+The return value is `encryptedVetKeyBytes`. It is **not** an AES key yet.
+
+The frontend also receives `publicKeyBytes` from `vetkd_public_key()` and obtains the vetKey with:
+
+```ts
+vetKey = encryptedVetKey.decryptAndVerify(
+  transportSecretKey,
+  publicKey,
+  input,
+)
+```
+
+Then it derives a 32-byte AES-256 key with:
+
+```ts
+rawAesKey = vetKey.deriveSymmetricKey("my-private-notes-v1/aes-gcm", 32)
+```
+
+and encrypts plaintext with WebCrypto `AES-GCM`. What you store is `iv || ciphertext`.
+
+### When decrypting
+
+You receive `iv || ciphertext` from the canister. Derive the vetKey again with the same `input = utf8("note/default")`. Because the vetKey is deterministic, the same caller, context, and input reproduce the same key. ([internetcomputer.org][2])
+
+Derive the AES key from that vetKey with the same `domainSep`, then decrypt the ciphertext.
+
+---
+
+## 9. Practical `input` design
+
+`input` is a **key name**, not a secret.
+
+```ts
+// One secret memo per user
+input = "note/default"
+
+// Separate key per note
+input = `note/${noteId}`
+
+// Separate key per file
+input = `file/${fileId}`
+
+// Separate by purpose
+input = `profile/private-fields`
+input = `backup/export-key`
+```
+
+In this example `context` includes the caller principal, so Alice’s `"note/default"` and Bob’s `"note/default"` are different keys.
+
+```text
+Alice:
+  context = domain || Alice principal
+  input   = "note/default"
+
+Bob:
+  context = domain || Bob principal
+  input   = "note/default"
+
+=> different vetKeys
+```
+
+---
+
+## 10. When you want shared data
+
+The implementation above targets **private data** only the owner can decrypt.
+
+If you need sharing but only use `context(caller)`, others cannot obtain the same key. For sharing, use one of the following:
+
+1. **KeyManager / EncryptedMaps**  
+   Official `@dfinity/vetkeys/key_manager` and `@dfinity/vetkeys/encrypted_maps` bundle access control, sharing, and vetKey retrieval behind higher-level APIs. EncryptedMaps identifies an encrypted map by map owner principal and map name; values in the map are transparently encrypted and decrypted on the frontend. ([ICP Developer Docs][5])
+
+2. **Roll your own ACL**  
+   Set `context` to `domain || owner || resourceId` and have the backend check that the caller may access `resourceId` before calling `vetKdDeriveKey`.  
+   In this case you do not put `caller` directly in context; you use a per-resource context.
+
+---
+
+## 11. Implementation notes
+
+* Do not let the frontend choose `context`. The backend must build it from the authenticated `caller` and ACL.
+* `input` is not secret. Design it as a stable, unique key identifier.
+* `transportSecretKey` is ephemeral. Usually do not persist it.
+* Do not use `encrypted_key` as an AES key. Always run `decryptAndVerify` to obtain the vetKey.
+* Do not use `vetKey.signatureBytes()` directly as a cipher key; use `deriveSymmetricKey(...)` for purpose separation.
+* Do not store plaintext on the canister. Canister state on a public blockchain is not a secret store.
+* Use `dfx_test_key` locally, `test_key_1` for mainnet testing, and `key_1` in production. Supported key names are listed in the official docs. ([internetcomputer.org][2])
+* `vetkd_derive_key` calls the management canister and therefore costs cycles. Official docs give per-key cost examples. ([internetcomputer.org][2])
+
+With this setup, the frontend makes authenticated calls to the backend canister via `@icp-sdk`, the backend invokes the vetKD management API from Motoko, and the actual secret key material is decrypted and used only inside the browser on the frontend.
+
+[1]: https://js.icp.build/core/v4.0/installation/ "Installation | ICP JS SDK Docs"
+[2]: https://internetcomputer.org/docs/building-apps/network-features/vetkeys/api "vetKD API | Internet Computer"
+[3]: https://js.icp.build/auth/latest/quick-start "Quick Start | ICP JS SDK Docs"
+[4]: https://5lfyp-mqaaa-aaaag-aleqa-cai.icp0.io/classes/_dfinity_vetkeys.VetKey.html?utm_source=chatgpt.com "VetKey | @dfinity/vetkeys - v0.1.0"
+[5]: https://docs.internetcomputer.org/building-apps/network-features/vetkeys/encrypted-onchain-storage "Encrypted onchain storage | Internet Computer"

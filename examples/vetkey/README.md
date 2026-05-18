@@ -39,7 +39,7 @@ cd backend
 nicp dev
 ```
 
-Use `nicp build` instead of `nicp dev` for a release-oriented build.
+Use `nicp developmentBuild` instead of `nicp dev` for a release-oriented build.
 Pass `none` as the second argument to `nicp new` if you want a backend-only project.
 
 If you want to work on the frontend, use the generated React app in [`frontend/app`](./frontend/app).

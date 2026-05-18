@@ -1,450 +1,538 @@
-# vetKD 概要
+以下は「低レベル vetKD API を直接使い、ユーザーごとの AES-GCM 鍵をブラウザで得る」実装例です。ICP との通信・認証は `@icp-sdk`、vetKey の復号・検証・鍵導出は公式の `@dfinity/vetkeys` を使います。ICP JS SDK では `@icp-sdk/core` が IC との通信用パッケージで、actor 作成には `@icp-sdk/core/agent` を使います。([ICP JS SDK Docs][1]) vetKey 用ユーティリティは現行公式例でも `@dfinity/vetkeys` から `DerivedPublicKey`, `TransportSecretKey`, `EncryptedVetKey` を import しています。([internetcomputer.org][2])
 
-vetKD は Management Canister の `vetkd_public_key` と `vetkd_derive_key` を使って、キャニスターごとの公開鍵生成と鍵導出を行う仕組みです。
+## 1. vetKey の基本構造
 
-## 要点
+vetKey は、ICP の subnet が持つ threshold master key から、次の値で決定論的に導出される鍵です。同じ `key_id + canister_id + context + input` なら同じ vetKey になります。公式 API でも「同じ入力は同じ鍵を返し、異なる input で無制限に別鍵を作れる」と説明されています。([internetcomputer.org][2])
 
-- `vetkd_public_key` は `opt principal` の `canister_id`、`context`、`key_id` を受け取り、`public_key` を返します。
-- `vetkd_derive_key` は `input`、`context`、`transport_public_key`、`key_id` を受け取り、`encrypted_key` を返します。
-- `vetkd_derive_key` には cycles の添付が必要です。
-- ローカル開発では `test_key_1`、mainnet / testnet では `key_1` を使います。
-- `context` はアプリケーションの domain separator として固定値を使うのが安全です。
+管理 canister の実体 API はこの 2 つです。
 
----
-
-## ICP の vetKD API と Management Canister 呼び出しの体系
-
-vetKD を実装する backend キャニスターは、**ICP の Management Canister** が提供する低レベル API を呼び出して、暗号化された鍵を生成します。以下は、`PrivateKvRoundtrip.tsx` のバックエンド実装で使われる 2 つの Core API と、それらを安全に利用するための設計方針をまとめたものです。
-
-### Management Canister の vetkd_public_key
-
-```
-型: vetkd_public_key : (record { 
-  canister_id : opt principal; 
-  context : blob; 
-  key_id : record { curve : variant { bls12_381_g2 }; name : text } 
-}) -> (record { public_key : blob })
-```
-
-**目的**：  
-与えられた context と key ID の組み合わせに対する **公開鍵** を取得します。後に client が transport 秘密鍵で復号する `encrypted_key` の検証や HKDF の入力に使用されます。
-
-**引数の責務**：
-
-| パラメータ | 用途 | 例 | 注記 |
-|-----------|------|-----|------|
-| `canister_id` | null を指定。caller canister が対象 | `null` | 本ブランチでは常に null |
-| `context` | application domain separator として固定。caller 分離がある場合は caller principal を含める | `UTF-8("private-kv-v1") ‖ caller.toCanonicalBlob()` | backend canister で決定。client からは受け取らない |
-| `key_id.curve` | BLS 曲線の指定 | `#bls12_381_g2` | 不変 |
-| `key_id.name` | 鍵名（環境に応じて異なる） | `"key_1"`（mainnet）、`"test_key_1"`（ローカルテスト） | 鍵ローテーションで変わる |
-
-**返り値**：
-
-| フィールド | 内容 | 長さ | 用途 |
-|-----------|------|------|------|
-| `public_key` | BLS 12-381 G2 群の点の serialize 形式 | 96 bytes | client が `encrypted_key` の検証に使う。`@dfinity/vetkeys` の `VetKey.verifyIntegrity()` など |
-
-**cycles コスト**：  
-**0 cycles**（添付不要）。
-
-**セキュリティ注釈**：  
-同じ canister の複数の actor（principal）が異なる `context` を使う場合、context に caller principal を含めて分離。共有リソースは別 context にする。
-
----
-
-### Management Canister の vetkd_derive_key
-
-```
-型: vetkd_derive_key : (record {
+```did
+vetkd_derive_key : (record {
   input : blob;
   context : blob;
   transport_public_key : blob;
-  key_id : record { curve : variant { bls12_381_g2 }; name : text }
-}) -> (record { encrypted_key : blob })
+  key_id : record { curve : vetkd_curve; name : text };
+}) -> (record { encrypted_key : blob });
+
+vetkd_public_key : (record {
+  canister_id : opt canister_id;
+  context : blob;
+  key_id : record { curve : vetkd_curve; name : text };
+}) -> (record { public_key : blob });
 ```
 
-**目的**：  
-threshold secret sharing に基づく暗号化された鍵を生成します。canister が secret を見ることなく、client が transport 秘密鍵で復号できる設計です。
+各値の意味はこうです。
 
-**引数の責務**：
+| 値                      |                     誰が作る |          秘密か | 役割                                                                                                                        |
+| ---------------------- | -----------------------: | -----------: | ------------------------------------------------------------------------------------------------------------------------- |
+| `key_id`               |                  backend |          いいえ | どの master key を使うか。例: local は `dfx_test_key`、mainnet test は `test_key_1`、production は `key_1`。([internetcomputer.org][2]) |
+| `context`              |                  backend |          いいえ | dapp・用途・ユーザー・権限範囲を分離するドメイン。例では `domain separator + caller principal`。                                                     |
+| `input`                |     frontend または backend |          いいえ | 個別鍵の識別子。例: `"note/default"`、`"file:<uuid>"`。同じ context 内で input を変えると別鍵。                                                  |
+| `transport_public_key` |                 frontend |          いいえ | 返却される vetKey をフロントエンドだけが復号できるようにする一時公開鍵。                                                                                  |
+| `encrypted_key`        | ICP → backend → frontend | いいえ、ただし暗号化済み | まだ使える鍵ではない。frontend の `TransportSecretKey` で復号・検証する。                                                                      |
+| `public_key`           | ICP → backend → frontend |          いいえ | `encrypted_key` が正しい vetKey か検証するための公開鍵。                                                                                  |
+| `vetKey`               |           frontend だけが得る |           はい | AES 鍵などを導出する元鍵。backend には渡さない。                                                                                            |
 
-| パラメータ | 用途 | 例 | 注記 |
-|-----------|------|-----|------|
-| `input` | リソースを識別するラベル。同じ `input` は同じ鍵を生成 | `UTF-8("kv:") ‖ resource_id_bytes ‖ UTF-8(":value-key:v1")` | client が生成した値を受け入れても、またはリソース ID から backend で生成しても可能。鍵ローテーションは `v2` など version を変えて new secret にする |
-| `context` | `vetkd_public_key` と同じ。application domain separator | 同上 | `vetkd_public_key` と一貫性が必須 |
-| `transport_public_key` | client が生成した一時的な ECDH 公開鍵（BLS 12-381 G1） | 48 bytes | client のブラウザ側で `TransportSecretKey.random()` → `.publicKeyBytes()` |
-| `key_id.curve`, `key_id.name` | 同上 | 同上 | 同上 |
-
-**返り値**：
-
-| フィールド | 内容 | 長さ | 用途 |
-|-----------|------|------|------|
-| `encrypted_key` | threshold secret sharing によって構成された暗号化バイト列 | 192 bytes | client が `transport_secret_key` で復号し、VetKey の raw bytes を得る。平文 secret は canister に到達しない |
-
-**cycles コスト**：  
-**必須**。backend canister は呼び出し時に **`ic0.call_cycles_add128` で十分な cycles を添付する必要があります**。
-
-公式の推定値（ローカル replica で計測可能）：
-
-- `test_key_1`: ≈ 10 billion cycles
-- `key_1`: ≈ 26 billion cycles
-
-実装では `ic0.cost_vetkd_derive_encrypted_key(...)` で動的推定を試み、失敗またはローカルで 0 が返る場合は上記を基準に 20% margin を加える fallback を用いるのが推奨です（ブランチルール参照）。
-
-**セキュリティ注釈**：  
-1. canister は `encrypted_key` をそのまま client に返す。平文化せず、metadata（version / ACL）だけ保存する。
-2. client は返された `encrypted_key` と自分の `transport_secret_key` でのみ復号できる。
-3. 同一 caller + 同一 `input` + 同一 `context` は同一 `encrypted_key` を返す（決定性）。これは往復確認や暗号化・復号の consistency に活用できる。
+重要なのは、backend canister は **平文データも vetKey 本体も見ない** ことです。frontend が一時 transport key pair を作り、その公開鍵だけを canister に渡し、返ってきた `encrypted_key` を frontend 側で復号します。公式 docs でも、この transport public key により「frontend だけが復号できる encrypted vetKey」を取得する流れになっています。([internetcomputer.org][2])
 
 ---
 
-### backend キャニスター内での cycles 処理
+## 2. Backend: Motoko
 
-`vetkd_derive_key` は cycles 添付が必須です。backend は以下の流れで対応します：
+### `mops.toml`
 
-1. **update 関数の冒頭で caller principal を捕捉**（await 後に reader が変わる事故を避ける）
-2. **`context` 構築**（caller principal と application name から）
-3. **`input` 決定**（リソース ID と version から）
-4. **cycles 推定**：
-   - release build かつ flag 有効時、`ic0_cost_vetkd_derive_encrypted_key` で計算
-   - ローカルで 0 が返る場合、鍵名に応じた fallback
-5. **オーバーフロー防止**：addCap / mulCap で安全に計算
-6. **`ic0.call_cycles_add128(0, estimatedCycles)` で添付**
-7. **Management Canister の `vetkd_derive_key` 呼び出し**（async callback）
-8. **戻り値の `encrypted_key` をそのまま client に返す**
+```toml
+[dependencies]
+base = "0.16.0"
+ic-vetkeys = "0.1.0"
+```
+
+バージョンはプロジェクトの Motoko / mops 環境に合わせて固定してください。
+
+### `src/backend/Main.mo`
+
+```motoko
+import Array "mo:base/Array";
+import Blob "mo:base/Blob";
+import HashMap "mo:base/HashMap";
+import ManagementCanister "mo:ic-vetkeys/ManagementCanister";
+import Nat8 "mo:base/Nat8";
+import Principal "mo:base/Principal";
+import Text "mo:base/Text";
+
+actor class Backend() {
+
+  // この dapp / 用途専用の domain separator。
+  // 別用途の鍵と衝突させないために、必ずアプリ固有の値にする。
+  let DOMAIN_SEPARATOR : [Nat8] =
+    Blob.toArray(Text.encodeUtf8("my-private-notes-v1"));
+
+  // 例として、ユーザーごとに暗号化済み note を 1 つ保存する。
+  // ここに入るのは ciphertext だけ。平文は絶対に入れない。
+  let encryptedNotes =
+    HashMap.HashMap<Principal, Blob>(10, Principal.equal, Principal.hash);
+
+  // local dfx なら "dfx_test_key"。
+  // mainnet test なら "test_key_1"。
+  // 本番なら "key_1"。
+  private func keyId() : ManagementCanister.VetKdKeyid {
+    {
+      curve = #bls12_381_g2;
+      name = "dfx_test_key";
+    }
+  };
+
+  // この例では caller principal を context に入れる。
+  // つまり、同じ input でもユーザーごとに別 vetKey になる。
+  private func context(caller : Principal) : Blob {
+    let callerBytes = Blob.toArray(Principal.toBlob(caller));
+
+    // [domain length] || domain || caller principal bytes
+    // 単純連結の曖昧性を避けるため domain length を入れる。
+    let flattened = Array.flatten<Nat8>([
+      [Nat8.fromNat(DOMAIN_SEPARATOR.size())],
+      DOMAIN_SEPARATOR,
+      callerBytes,
+    ]);
+
+    Blob.fromArray(flattened);
+  };
+
+  // frontend が作った transport public key と input を受け取る。
+  // 戻り値は「暗号化された vetKey」。まだ AES 鍵ではない。
+  public shared ({ caller }) func vetkd_derive_key(
+    transportKey : Blob,
+    input : Blob,
+  ) : async Blob {
+    await ManagementCanister.vetKdDeriveKey(
+      input,
+      context(caller),
+      keyId(),
+      transportKey,
+    )
+  };
+
+  // frontend が encrypted vetKey を検証するための public key。
+  // derive_key と同じ context / key_id を使う必要がある。
+  public shared ({ caller }) func vetkd_public_key() : async Blob {
+    await ManagementCanister.vetKdPublicKey(
+      null,
+      context(caller),
+      keyId(),
+    )
+  };
+
+  // 暗号化済みデータを保存。
+  public shared ({ caller }) func put_encrypted_note(ciphertext : Blob) : async () {
+    encryptedNotes.put(caller, ciphertext);
+  };
+
+  // 暗号化済みデータを取得。
+  public shared query ({ caller }) func get_encrypted_note() : async ?Blob {
+    encryptedNotes.get(caller)
+  };
+}
+```
+
+この `context(caller)` がアクセス制御の中核です。frontend から `context` を受け取らないのが重要です。caller の principal を backend が認証済み情報として使うことで、「Alice が Bob 用の鍵を勝手に取得する」設計ミスを避けます。公式 docs でも、caller identity を `context` に使うことで、その caller と `input` に固有の vetKey になり、その caller だけが取得・復号できると説明されています。([internetcomputer.org][2])
 
 ---
 
-### backend 側と client 側の責務分担（セキュリティモデル）
+## 3. Candid interface
 
-| 項目 | backend キャニスター | client ブラウザ |
-|------|-------------------|-----------------|
-| caller principal の確認 | ✓ caller を読み、context に含める | ✗ （ブラウザは自分の principal を信頼） |
-| context の決定 | ✓ domain separator + caller から決定 | ✗ context を受け取らない |
-| input の生成 | △ リソース ID から生成 or client から受け取り（受け取り時は検証） | △ リソース ID の提案 |
-| transport 秘密鍵の管理 | ✗ transport secret は**見ない**、public key だけ受け取る | ✓ browser memory のみ、canister には送らない |
-| encrypted_key の復号 | ✗ 復号しない、metadata だけ保存 | ✓ transport secret で復号 |
-| 対称鍵の導出（HKDF） | ✗ 行わない | ✓ VetKey からのに実施 |
-| 平文の暗号化・復号 | ✗ 行わない | ✓ AES-256-GCM |
-| ACL・アクセス制御 | ✓ caller と resource の関係を検証 | ✗ （canister が決定） |
+概念的にはこうなります。
+
+```did
+service : {
+  vetkd_derive_key : (blob, blob) -> (blob);
+  vetkd_public_key : () -> (blob);
+
+  put_encrypted_note : (blob) -> ();
+  get_encrypted_note : () -> (opt blob) query;
+}
+```
+
+`blob` は TypeScript 側では通常 `Uint8Array` または `number[]` として扱われます。以下の frontend コードでは `Uint8Array` に正規化します。
 
 ---
 
-## Private KV ラウンドトリップ（`PrivateKvRoundtrip.tsx` の流れ）
+## 4. Frontend: TypeScript + `@icp-sdk`
 
-`examples/vetkey/frontend/app/src/components/PrivateKvRoundtrip.tsx` の `runRoundtrip`（おおよそ 58〜164 行）では、**caller（Internet Identity でログインしたプリンシパル）ごと**の Private KV に、vetKey 由来の素材で暗号化した平文を保存し、取り出して復号します。鍵生成と暗号化・復号はブラウザ上で行い、**サンプル backend キャニスター**には鍵導出結果の取得と blob の保存・取得だけを依頼します。
+### install
 
-以下の **一例** は同じ実行の `console.log` に現れた値である。鍵・プリンシパル・暗号文は**実行ごとに変わる**。
-
-### 事前条件（UI・入力）
-
-- **key version**: 入力文字列を `BigInt` にし `kv` とする。`derivePrivateKvKey`・`storePrivateKv` の第 2 引数（`nat64`）に相当する値として渡る。  
-  **一例**: UI で `1` → `kv` は `1n`。
-- **平文**: `TextEncoder` で UTF-8 の `Uint8Array` にしてから、以降の暗号化処理に渡る。  
-  **一例**: 文字列 `hello world` → バイト列の hex は `68656c6c6f20776f726c64`。
-
-### ステップ 0: transport 鍵素材の生成（キャニスター呼び出しなし）
-
-この段階では **キャニスターは呼ばない**。ブラウザ側のみで、以降のステップに渡す文字列・バイト列を用意する。
-
-**0-1（ライブラリ `@dfinity/vetkeys`）** `TransportSecretKey.random()`
-
-- **引数**: なし。
-- **返り値**: transport 用の一時秘密鍵オブジェクト（以下 `transportSecret` と書く）。
-
-**0-2（ライブラリ）** `transportSecret.serialize()`
-
-- **引数**: なし。
-- **返り値**: 秘密鍵の `Uint8Array`。
-
-**0-3（アプリ）** バイト列を hex 文字列に変換
-
-- **入力**: 0-2 のバイト列。
-- **出力**: `transportSecretHex`（以降の復号までコンポーネントが保持。**キャニスターには送らない**）。  
-  **一例**: `5783ba99bebd52ddc5b571f7b9a614f4eca22bb15d72158531c65028101f62bc`（32 バイト秘密鍵の hex）。
-
-**0-4（ライブラリ）** `transportSecret.publicKeyBytes()`
-
-- **引数**: なし。
-- **返り値**: transport 公開鍵の `Uint8Array`。
-
-**0-5（アプリ）** バイト列を hex 文字列に変換
-
-- **入力**: 0-4 のバイト列。
-- **出力**: `transportPublicHex`（**ステップ 1 のキャニスター第 1 引数**にだけ使う）。  
-  **実例**: `8260f5058e4f416ae81c72ab77e56cd0e5a957933217a7de253bf89375c3ff4839e7536ecba6bdc163b7e6ce85bc062f`（このログ例では `trim().toLowerCase()` の結果も同じ文字列）。
-
-### ステップ 1: `derivePrivateKvKey`（キャニスター）
-
-**Candid**: `derivePrivateKvKey : (text, nat64) -> (record { ... })`
-
-**キャニスター呼び出し 1 回**
-
-- **第 1 引数（`text`）**: ステップ 0-5 で得た `transportPublicHex`（transport 公開鍵の hex）。  
-- **第 2 引数（`nat64`）**: `kv`（key version）。  
-
-```
-transportPublicHex: 8260f5058e4f416ae81c72ab77e56cd0e5a957933217a7de253bf89375c3ff4839e7536ecba6bdc163b7e6ce85bc062f
-kv: 1n
+```bash
+npm install @icp-sdk/core @icp-sdk/auth @dfinity/vetkeys
 ```
 
-**返り値（record）のうち、この往復で使う主なフィールド**
-
-| フィールド | 意味 |
-|------------|------|
-| `owner` | KV の所有者プリンシパル（通常 caller） |
-| `context_label` | 鍵導出に使った文脈のテキスト表現 |
-| `encrypted_key_hex` | `vetkd_derive_key` の `encrypted_key` に相当する blob の hex。以降のブラウザ側処理の入力になる |
-
-```
-owner: krzlp-frl5q-f7xu4-4csnc-i5p7y-xuhti-si6hg-ulr7i-aafku-p4a6i-eqe
-context_label: private-kv-v1|owner=krzlp-frl5q-f7xu4-4csnc-i5p7y-xuhti-si6hg-ulr7i-aafku-p4a6i-eqe
-# 全体は 192 バイト＝384 hex 文字程度になる
-encrypted_key_hex: ADAC5DEB3BD35CF015CAB21C69F56A475EBBBA453EF2B0B3D8...083
-```
-
-コンポーネントでは、定数 `PRIVATE_KV_DOMAIN_SEP`（`"private-kv-v1"`）と `owner.toString()` から組み立てた文字列と **`context_label` が一致するか**を検証し、一致しなければ例外にする。
-
-**backend 実装上の動作**
-
-`derivePrivateKvKey` の backend 実装（backend canister の update 関数）は、以下の処理を行います：
-
-1. **caller principal を捕捉**（`msg_caller` 相当）
-   - 以降のステップで `await` が入るため、上昇に進める
-
-2. **input を構築**
-   - `input = UTF-8("kv:") ‖ caller.toCanonicalBlob() ‖ UTF-8(":value-key:v") ‖ key_version.toLEB128()`
-   - 同一 caller + 同一 key_version なら、同一 input → 同一 encrypted_key になる
-
-3. **context を構築**
-   - `context = UTF-8("private-kv-v1") ‖ caller.toCanonicalBlob()`
-   - caller ごとの分離を保証
-
-4. **transport_public_key をパース**
-   - client から受け取った hex を 48 バイト のバイト列に戻す
-
-5. **cycles 推定**
-   - `ic0_cost_vetkd_derive_encrypted_key()` で動的推定を試す
-   - 失敗時またはローカルで 0 が返る場合、`key_1` コストの 20% margin に fallback
-
-6. **ic0.call_cycles_add128() で cycles を添付**
-   - Management Canister への呼び出しに `vetkd_derive_key` 用に必要な cycles を準備
-
-7. **vetkd_derive_key 呼び出し** → **await**
-   - Management Canister に `input`, `context`, `transport_public_key`, `key_id` を渡す
-   - Management Canister が `encrypted_key` を返す
-   - **canister 側は `encrypted_key` を復号しない**。平文 secret を見ない。
-
-8. **応答を client に返す**
-   - `encrypted_key` を hex に変換して `encrypted_key_hex` として返す
-   - `context_label`（debug 用）も返す
-   - `owner` principal も返す
-
-**cycles の内訳（本ステップでのコスト）**
-
-| 対象 | コスト |
-|------|--------|
-| `vetkd_derive_key` の cycles add | ≈ 26B cycles（key_1）+ 20% margin ≈ 31.2B cycles |
-| backend canister の update 処理本体（ICP 標準コスト） | ≈ 2-5M cycles |
-| **合計** | ≈ 31.2B + 数M cycles |
-
-このコストは caller が支払う（backend canister に充分な canister balance がある前提）。
-
-### ステップ 2: 平文の暗号化（キャニスター呼び出しなし）
-
-この段階でも **キャニスターは呼ばない**。入力は、(a) ステップ 0-3 の `transportSecretHex`、(b) ステップ 1 の `encrypted_key_hex`、(c) 事前条件で用意した平文の `Uint8Array`、`(d)` ドメイン分離用の文字列（この例では `"private-kv-v1"`）である。
-
-```
-transportSecretHex: 0e89f1ff375a4e16ceabf981e9e0613b09ad50b90dec589feb170598ea24275f
-plaintextHex: 7573657220736563726574207061796c6f616420666f722070726976617465206b76
-domainSep: private-kv-v1
-```
-
-**2-1（アプリ）** hex 文字列をバイト列に戻す
-
-- **入力**: `transportSecretHex`。  
-  **実例**: `0e89f1ff375a4e16ceabf981e9e0613b09ad50b90dec589feb170598ea24275f`。
-- **出力**: 秘密鍵バイト列。
-
-**2-2（ライブラリ `@dfinity/vetkeys`）** `TransportSecretKey.deserialize(...)`
-
-- **引数**: 2-1 のバイト列。
-- **返り値**: `transportSecret` と同等の秘密鍵オブジェクト。
-
-**2-3（アプリ）** hex 文字列をバイト列に戻す
-
-- **入力**: ステップ 1 の `encrypted_key_hex`。  
-  **一例**: ステップ 1 で示した先頭・末尾を含む長い hex（全体で約 384 文字）。
-- **出力**: `encrypted_key_bytes`（典型的には 192 バイト。先頭 48B・中間 96B・末尾 48B のレイアウト）。
-
-**2-4（ライブラリ `@noble/curves`）** `bls12_381.G1.ProjectivePoint.fromHex`（2 回）
-
-- **引数**: `encrypted_key_bytes` の先頭 48 バイト、および **末尾 48 バイト**（中間 96 バイトは読み飛ばす）。
-- **返り値**: 曲線上の点 `c1` と `c3`。
-
-**2-5（ライブラリ）** `transportSecret.serialize()` と `bls12_381.G1.normPrivateKeyToScalar(...)`
-
-- **入力**: transport 秘密鍵のシリアルバイト列。
-- **出力**: スカラー `sk`。
-
-**2-6（ライブラリ `@noble/curves`）** 点の `multiply` / `subtract`
-
-- **入力**: `c1`, `c3`, `sk`。
-- **出力**: 点 `c3 - c1 * sk`（VetKey 用の点）。
-
-**2-7（ライブラリ `@dfinity/vetkeys`）** `VetKey` の構築
-
-- **引数**: 2-6 の点。
-- **返り値**: `VetKey` インスタンス。
-
-**2-8（ライブラリ `@dfinity/vetkeys`）** `asDerivedKeyMaterial()`（`await`）
-
-- **引数**: なし（レシーバは 2-7 の `VetKey`）。
-- **返り値**: VetKey の生バイト列を IKM として Web Crypto の HKDF に載せられるオブジェクト。
-
-**2-9（ライブラリ `@dfinity/vetkeys` + Web Crypto）** `encryptMessage(plaintext, domainSep)`
-
-- **引数**: 平文の `Uint8Array`、ドメイン分離文字列 `domainSep`（この例では `"private-kv-v1"`）。`domainSep` の UTF-8 は **HKDF の `info`** として使われ、**AES-GCM の AAD ではない**（`@dfinity/vetkeys` 0.4.x 系の実装に準拠）。
-- **返り値**: **`IV（12 バイト）‖ AES-256-GCM の ciphertext と認証タグ`** からなる単一の `Uint8Array`。  
-  **実例**: 長さ 62 の `Uint8Array`、hex は `63f402c2dd2b99290765c8b7eafb2a2f254c87b8475ac46ccca6aa0d1a90c7b4499e5b2c7ca08d990cd5c60b3fe86477620caccdfaa7cd937e39d3ef6435`（12 + 34 + 16 バイト）。
-
-**2-10（アプリ）** 暗号文バイト列を hex 文字列に変換
-
-- **入力**: 2-9 の `Uint8Array`。  
-  **実例**: `63f402c2dd2b99290765c8b7eafb2a2f254c87b8475ac46ccca6aa0d1a90c7b4499e5b2c7ca08d990cd5c60b3fe86477620caccdfaa7cd937e39d3ef6435`。
-- **出力**: 以降の表示・比較用の hex（`storePrivateKv` には **バイト列のまま**渡す）。
-
-### ステップ 3: `storePrivateKv`（キャニスター）
-
-**Candid**: `storePrivateKv : (blob, nat64) -> (record { ... })`
-
-**キャニスター呼び出し 1 回**
-
-- **第 1 引数（`blob`）**: ステップ 2-9 で得た暗号文バイト列。  
-  **実例**: ステップ 2-9 の 62 バイトと同じ内容の `Uint8Array`。
-- **第 2 引数（`nat64`）**: `kv`。  
-  **実例**: `1n`。
-
-**返り値**: メタ情報の record（この最小往復では主に「保存が通った」ことの確認に留まる）。
-
-**backend 実装上の動作**
-
-`storePrivateKv` の backend 実装は、以下の処理を行います：
-
-1. **caller principal を捕捉**（update 関数冒頭で）
-2. **暗号文 blob を受け取る**（client が作成したもの、`blob` 型）
-3. **key_version を受け取る**（client が指定したもの、`nat64` 型）
-4. **canister の内部ストレージに保存**
-   - キー: `(caller_principal, key_version)` の組み合わせ
-   - 値: `{ ciphertext: blob, owner: principal, key_version: nat64, ...metadata }`
-5. **応答を返す**（成功通知）
-
-注釈：
-- canister は暗号文を **復号しない**。blob のまま保存する。
-- ACL や所有権チェックはこの時点で不要（前提は caller が正当なプリンシパル）。
-- cycles コスト: canister の store 操作（ICP 標準コスト、数M cycles）。
-
-### ステップ 4: `fetchPrivateKv`（キャニスター）
-
-**Candid**: `fetchPrivateKv : () -> (record { ciphertext_hex: text; key_version: nat; owner: principal; })`
-
-**キャニスター呼び出し 1 回**
-
-- **引数**: なし（caller の KV を読む）。
-
-**返り値**
-
-- **`ciphertext_hex`**: 保存されていた暗号文の hex 文字列。  
-  **実例**: `63F402C2DD2B99290765C8B7EAFB2A2F254C87B8475AC46CCC…08D990CD5C60B3FE86477620CACCDFAA7CD937E39D3EF6435`（大文字混在で返る例）。
-- その他 `key_version`, `owner`。
-
-コンポーネントでは、フェッチした hex を小文字に正規化したものと、ステップ 2-10 で得た hex の小文字化とを比較し、一致しなければ例外にする。  
-**実例**: `fetchedCiphertextHexLower` は `63f402c2dd2b99290765c8b7eafb2a2f254c87b8475ac46ccca6aa0d1a90c7b4499e5b2c7ca08d990cd5c60b3fe86477620caccdfaa7cd937e39d3ef6435` で、ステップ 2-10 の hex（小文字）と一致する。
-
-**backend 実装上の動作**
-
-`fetchPrivateKv` の backend 実装は、以下の処理を行います：
-
-1. **caller principal を捕捉**（query/update 関数冒頭で）
-2. **キー `(caller_principal, 最新の key_version)`（または引数で指定された version）で canister ストレージから読み込み**
-   - 見つからない場合はエラーまたは空応答
-
-3. **暗号文と metadata を取り出す**
-   - `{ ciphertext_hex: text, owner: principal, key_version: nat64, ... }`
-   - 暗号文を hex に変換して返す
-
-4. **応答を返す**
-
-注釈：
-- `fetchPrivateKv()` はこのサンプルでは **引数がない query** に見える（コンポーネント側から呼び出しの引数なし）が、backend canister の実装では caller を暗黙に捕捉し、caller の最新 KV を返す仕様。
-- もし古いバージョンを読みたい場合は、`fetchPrivateKvByVersion(key_version: nat64)` など明示的な version 指定 query を追加する設計もある。
-- cycles コスト: canister の read 操作（query なら 0、update なら標準コスト）。
-
-### ステップ 5: 復号（キャニスター呼び出しなし）
-
-**キャニスターは呼ばない**。入力は、(a) ステップ 0-3 の `transportSecretHex`、(b) ステップ 1 の `encrypted_key_hex`、(c) ステップ 4 の `ciphertext_hex` をバイト列に戻したもの、(d) ステップ 2 と同じ `domainSep` である。
-
-**一例**: `transportSecretHex` は `0e89f1ff375a4e16ceabf981e9e0613b09ad50b90dec589feb170598ea24275f`、`ciphertext_hex` はステップ 4 の大文字 hex をバイト列に戻したもの、`domainSep` は `private-kv-v1`。
-
-**5-1 〜 5-8**  
-ステップ **2-1 〜 2-8** と同じ順で、同じ `transportSecretHex` と `encrypted_key_hex` から、ステップ 2-8 と同種のオブジェクト（HKDF 用 IKM を内包）まで到達する。
-
-**5-9（ライブラリ `@dfinity/vetkeys` + Web Crypto）** `decryptMessage(ciphertext, domainSep)`
-
-- **引数**: ステップ 4 で得た暗号文バイト列（先頭 12 バイトを IV、残りを GCM の本体＋タグとして解釈）、`domainSep`。
-- **返り値**: 平文の `Uint8Array`。  
-  **実例（ログ）**: `decryptedBytesHex` は `7573657220736563726574207061796c6f616420666f722070726976617465206b76`（暗号化前の `plaintextHex` と一致）、長さ 34 バイト。
-
-**5-10（ブラウザ標準）** `TextDecoder`
-
-- **入力**: 5-9 のバイト列。
-- **出力**: UTF-8 文字列。コンポーネントはこれを入力平文と比較する。  
-  **実例（ログ）**: `decryptedBytesUtf8` は `user secret payload for private kv`。
-
-### 対称暗号の要点（ライブラリ内の `encryptMessage` / `decryptMessage`）
-
-| 項目 | 内容 |
-|------|------|
-| IKM | VetKey の生バイト列（BLS 上の表現の 48 バイトに相当） |
-| 鍵導出 | HKDF（SHA-256）、salt 空、`info` = `domainSep` の UTF-8、AES-256-GCM 256 bit |
-| 形式 | 暗号文は **12 バイト IV + GCM 出力（タグ含む）** |
-
-### 処理の流れ（要約図）
-
-```mermaid
-sequenceDiagram
-  participant B as ブラウザ
-  participant C as backend キャニスター
-  B->>B: transport 鍵（TransportSecretKey 系）
-  B->>C: derivePrivateKvKey(transportPublicHex, kv)
-  C-->>B: encrypted_key_hex, context_label, owner, ...
-  B->>B: encrypted_key + transport 秘密鍵で VetKey 復元し AES-GCM 暗号化
-  B->>C: storePrivateKv(ciphertext, kv)
-  C-->>B: メタ record
-  B->>C: fetchPrivateKv()
-  C-->>B: ciphertext_hex, ...
-  B->>B: hex 一致確認
-  B->>B: 同一素材で decryptMessage（AES-GCM 復号）
+`@icp-sdk/auth` は Internet Identity 認証に使えます。公式 quick start でも `AuthClient` は `@icp-sdk/auth/client`、`HttpAgent` は `@icp-sdk/core/agent` から import されています。([ICP JS SDK Docs][3])
+
+### `vetkeyClient.ts`
+
+```ts
+import { Actor, HttpAgent } from "@icp-sdk/core/agent";
+import { Principal } from "@icp-sdk/core/principal";
+import { IDL } from "@icp-sdk/core/candid";
+import { AuthClient } from "@icp-sdk/auth/client";
+
+import {
+  DerivedPublicKey,
+  EncryptedVetKey,
+  TransportSecretKey,
+  VetKey,
+} from "@dfinity/vetkeys";
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+type BackendActor = {
+  vetkd_derive_key: (
+    transportKey: Uint8Array,
+    input: Uint8Array,
+  ) => Promise<Uint8Array | number[]>;
+
+  vetkd_public_key: () => Promise<Uint8Array | number[]>;
+
+  put_encrypted_note: (ciphertext: Uint8Array) => Promise<void>;
+
+  get_encrypted_note: () => Promise<[] | [Uint8Array | number[]]>;
+};
+
+const idlFactory = ({ IDL }: { IDL: typeof import("@icp-sdk/core/candid").IDL }) =>
+  IDL.Service({
+    vetkd_derive_key: IDL.Func(
+      [IDL.Vec(IDL.Nat8), IDL.Vec(IDL.Nat8)],
+      [IDL.Vec(IDL.Nat8)],
+      [],
+    ),
+    vetkd_public_key: IDL.Func(
+      [],
+      [IDL.Vec(IDL.Nat8)],
+      [],
+    ),
+    put_encrypted_note: IDL.Func(
+      [IDL.Vec(IDL.Nat8)],
+      [],
+      [],
+    ),
+    get_encrypted_note: IDL.Func(
+      [],
+      [IDL.Opt(IDL.Vec(IDL.Nat8))],
+      ["query"],
+    ),
+  });
+
+function asUint8Array(value: Uint8Array | number[]): Uint8Array {
+  return value instanceof Uint8Array ? value : Uint8Array.from(value);
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+export async function createBackendActor(params: {
+  backendCanisterId: string;
+  network: "local" | "ic";
+}): Promise<BackendActor> {
+  const authClient = new AuthClient({
+    identityProvider:
+      params.network === "ic"
+        ? "https://id.ai/authorize"
+        : "http://id.ai.localhost:8000",
+  });
+
+  if (!authClient.isAuthenticated()) {
+    await authClient.signIn();
+  }
+
+  const identity = await authClient.getIdentity();
+
+  const agent = await HttpAgent.create({
+    identity,
+    host:
+      params.network === "ic"
+        ? "https://icp-api.io"
+        : "http://127.0.0.1:4943",
+  });
+
+  // local replica では root key を取得する。
+  // mainnet では不要。mainnet で無条件に呼ばない。
+  if (params.network === "local") {
+    await agent.fetchRootKey();
+  }
+
+  return Actor.createActor<BackendActor>(idlFactory, {
+    agent,
+    canisterId: Principal.fromText(params.backendCanisterId),
+  });
+}
 ```
 
 ---
 
-## Management Canister 呼び出しの大局観
+## 5. vetKey を取得して AES 鍵にする
 
-Private KV の往復では、**Management Canister への呼び出しはステップ 1 でのみ発生**します。
+流れは 4 段階です。
 
-| ステップ | backend 呼び出し | Management Canister 呼び出し | 備考 |
-|---------|----------------|----------------------------|------|
-| 0 | ✗ | ✗ | ブラウザのみ、transport 鍵生成 |
-| 1: `derivePrivateKvKey` | ✓ (update) | ✓ `vetkd_derive_key` + cycles add | **このステップでのみ** |
-| 2 | ✗ | ✗ | ブラウザのみ、暗号化 |
-| 3: `storePrivateKv` | ✓ (update) | ✗ | blob を保存するのみ |
-| 4: `fetchPrivateKv` | ✓ (query/update) | ✗ | blob を読むのみ |
-| 5 | ✗ | ✗ | ブラウザのみ、復号 |
+1. frontend が `TransportSecretKey.random()` で一時 transport secret key を作る。
+2. `transportSecretKey.publicKeyBytes()` と `input` を backend に渡す。
+3. backend は management canister に `vetkd_derive_key` を呼び、`encrypted_key` を返す。
+4. frontend は `vetkd_public_key` を取得し、`encrypted_key.decryptAndVerify(...)` で vetKey に戻す。
 
-**重要**：Management Canister への `vetkd_derive_key` の呼び出し・cycles 添付・レスポンス処理はすべて backend canister が担当します。client ブラウザは Management Canister と直接通信しません。
+公式 TypeScript 例もこの順序です。`TransportSecretKey.random()`、`transportSecretKey.publicKeyBytes()`、`vetkd_derive_key(...)`、`DerivedPublicKey.deserialize(...)`、`decryptAndVerify(...)` を使います。([internetcomputer.org][2])
 
-## 参考
+```ts
+export async function getVetKey(
+  backend: BackendActor,
+  inputLabel: string,
+): Promise<VetKey> {
+  // input は「どの鍵が欲しいか」を表す byte string。
+  // 例: "note/default", "note/123", "file:<uuid>"
+  const input = textEncoder.encode(inputLabel);
 
-- [Management Canister / vetKD](https://docs.internetcomputer.org/references/management-canister#vetkd-verifiable-encrypted-threshold-key-derivation)
-- [@dfinity/vetkeys（npm）](https://www.npmjs.com/package/@dfinity/vetkeys)
+  // frontend 内だけに保持する一時秘密鍵。
+  const transportSecretKey = TransportSecretKey.random();
+
+  // backend に渡すのは transport public key だけ。
+  const encryptedVetKeyBytesRaw = await backend.vetkd_derive_key(
+    transportSecretKey.publicKeyBytes(),
+    input,
+  );
+
+  const encryptedVetKeyBytes = asUint8Array(encryptedVetKeyBytesRaw);
+  const encryptedVetKey = new EncryptedVetKey(encryptedVetKeyBytes);
+
+  // derive_key と同じ context/key_id に対応する public key。
+  const publicKeyBytesRaw = await backend.vetkd_public_key();
+  const publicKey = DerivedPublicKey.deserialize(asUint8Array(publicKeyBytesRaw));
+
+  // encrypted vetKey を復号し、正しい input に対するものか検証する。
+  const vetKey = encryptedVetKey.decryptAndVerify(
+    transportSecretKey,
+    publicKey,
+    input,
+  );
+
+  return vetKey;
+}
+
+export async function aesKeyFromVetKey(vetKey: VetKey): Promise<CryptoKey> {
+  // 32 bytes = AES-256 用。
+  // domain separator は「この vetKey から何用途の鍵を導出するか」を分離する。
+  const rawAesKey = vetKey.deriveSymmetricKey(
+    "my-private-notes-v1/aes-gcm",
+    32,
+  );
+
+  return crypto.subtle.importKey(
+    "raw",
+    rawAesKey,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+```
+
+`VetKey.deriveSymmetricKey(domainSep, outputLength)` は、vetKey から指定長の対称鍵を導出するための API です。`domainSep` はアプリ名と用途を含めた一意の値にする、という注意も公式 Typedoc にあります。([Dfinity Vetkeys][4])
+
+---
+
+## 6. 暗号化して canister に保存する
+
+```ts
+export async function saveEncryptedNote(
+  backend: BackendActor,
+  plaintext: string,
+): Promise<void> {
+  // この inputLabel が同じなら、同じユーザーは同じ vetKey を再取得できる。
+  // context に caller principal が入っているので、別ユーザーは別鍵になる。
+  const vetKey = await getVetKey(backend, "note/default");
+  const aesKey = await aesKeyFromVetKey(vetKey);
+
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintextBytes = textEncoder.encode(plaintext);
+
+  const ciphertextBuffer = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv,
+    },
+    aesKey,
+    plaintextBytes,
+  );
+
+  const ciphertext = new Uint8Array(ciphertextBuffer);
+
+  // 復号時に IV が必要なので、IV || ciphertext として保存する。
+  const payload = concatBytes(iv, ciphertext);
+
+  await backend.put_encrypted_note(payload);
+}
+```
+
+この時点で canister に保存されるのは `payload = iv || ciphertext` だけです。canister は AES 鍵も平文も知らないため、状態が読まれても note の中身は見えません。EncryptedMaps の公式説明でも、暗号化・復号は frontend で行い、canister は自分が知らない鍵で暗号化されたデータだけを見る、という設計が強調されています。([ICP Developer Docs][5])
+
+---
+
+## 7. 取得して復号する
+
+```ts
+export async function loadEncryptedNote(
+  backend: BackendActor,
+): Promise<string | null> {
+  const maybePayload = await backend.get_encrypted_note();
+
+  if (maybePayload.length === 0) {
+    return null;
+  }
+
+  const payload = asUint8Array(maybePayload[0]);
+
+  const iv = payload.slice(0, 12);
+  const ciphertext = payload.slice(12);
+
+  const vetKey = await getVetKey(backend, "note/default");
+  const aesKey = await aesKeyFromVetKey(vetKey);
+
+  const plaintextBuffer = await crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv,
+    },
+    aesKey,
+    ciphertext,
+  );
+
+  return textDecoder.decode(plaintextBuffer);
+}
+```
+
+ここで同じ `inputLabel = "note/default"` を使う必要があります。`input` が 1 byte でも違うと別 vetKey になります。
+
+---
+
+## 8. 何を渡し、何を受け取り、どう使うか
+
+### 暗号化・保存時
+
+```ts
+await saveEncryptedNote(backend, "secret memo");
+```
+
+内部で渡している値はこうです。
+
+```ts
+input = utf8("note/default")
+transport_public_key = transportSecretKey.publicKeyBytes()
+```
+
+backend はこれを受け取り、management canister にこう渡します。
+
+```motoko
+ManagementCanister.vetKdDeriveKey(
+  input,
+  context(caller),
+  keyId(),
+  transportKey,
+)
+```
+
+返る値は `encryptedVetKeyBytes` です。これはまだ AES 鍵ではありません。
+
+frontend はさらに `vetkd_public_key()` から `publicKeyBytes` を受け取り、
+
+```ts
+vetKey = encryptedVetKey.decryptAndVerify(
+  transportSecretKey,
+  publicKey,
+  input,
+)
+```
+
+で vetKey を得ます。その後、
+
+```ts
+rawAesKey = vetKey.deriveSymmetricKey("my-private-notes-v1/aes-gcm", 32)
+```
+
+で 32 byte の AES-256 鍵を導出し、WebCrypto の `AES-GCM` で平文を暗号化します。保存するのは `iv || ciphertext` です。
+
+### 復号時
+
+canister から `iv || ciphertext` を受け取ります。もう一度、同じ `input = utf8("note/default")` で vetKey を取得します。vetKey は deterministic なので、同じ caller・同じ context・同じ input なら同じ鍵を再取得できます。([internetcomputer.org][2])
+
+その vetKey から同じ `domainSep` で AES key を導出し、ciphertext を復号します。
+
+---
+
+## 9. `input` 設計の実例
+
+`input` は「鍵の名前」です。秘密値ではありません。
+
+```ts
+// ユーザーごとに 1 つの秘密メモ
+input = "note/default"
+
+// note ごとに別鍵
+input = `note/${noteId}`
+
+// ファイルごとに別鍵
+input = `file/${fileId}`
+
+// 用途ごとに分離
+input = `profile/private-fields`
+input = `backup/export-key`
+```
+
+この例では `context` に caller principal が入るため、Alice の `"note/default"` と Bob の `"note/default"` は別鍵です。
+
+```text
+Alice:
+  context = domain || Alice principal
+  input   = "note/default"
+
+Bob:
+  context = domain || Bob principal
+  input   = "note/default"
+
+=> 別 vetKey
+```
+
+---
+
+## 10. 共有データを作りたい場合
+
+上の実装は「本人だけが復号できる private data」用です。
+
+共有したい場合に `context(caller)` だけを使うと、他人が同じ鍵を取得できません。共有には次のどちらかを使います。
+
+1. **KeyManager / EncryptedMaps を使う**
+   公式 `@dfinity/vetkeys/key_manager` と `@dfinity/vetkeys/encrypted_maps` は、アクセス権管理・共有・vetKey 取得を高レベル API にまとめています。EncryptedMaps は map owner principal と map name で encrypted map を識別し、map 内の値は frontend 側で透過的に暗号化・復号される設計です。([ICP Developer Docs][5])
+
+2. **自前で ACL を作る**
+   `context` を `domain || owner || resourceId` にし、backend 側で「caller がその resourceId にアクセス可能か」を検査してから `vetKdDeriveKey` を呼びます。
+   この場合、`caller` を context に直接入れるのではなく、resource 単位の context にします。
+
+---
+
+## 11. 実装上の注意点
+
+* `context` は frontend に決めさせない。backend が認証済み `caller` と ACL から組み立てる。
+* `input` は秘密ではない。鍵識別子として安定・一意に設計する。
+* `transportSecretKey` は一時鍵。通常は保存しない。
+* `encrypted_key` を AES 鍵として使わない。必ず `decryptAndVerify` して vetKey を得る。
+* `vetKey.signatureBytes()` を直接暗号鍵として使わず、`deriveSymmetricKey(...)` で用途分離した鍵を作る。
+* canister には平文を保存しない。public blockchain 上の canister state は秘密ストレージではない。
+* local は `dfx_test_key`、mainnet の検証は `test_key_1`、本番は `key_1` に切り替える。サポートされる key name は公式 docs に列挙されています。([internetcomputer.org][2])
+* `vetkd_derive_key` は management canister 呼び出しなので cycles cost がある。公式 docs は key ごとの費用例を掲載しています。([internetcomputer.org][2])
+
+この構成なら、frontend は `@icp-sdk` で backend canister に認証済み call を行い、backend は Motoko で vetKD management API を呼び、実際の秘密鍵 material は frontend のブラウザ内だけで復号・利用されます。
+
+[1]: https://js.icp.build/core/v4.0/installation/ "Installation | ICP JS SDK Docs"
+[2]: https://internetcomputer.org/docs/building-apps/network-features/vetkeys/api "vetKD API | Internet Computer"
+[3]: https://js.icp.build/auth/latest/quick-start "Quick Start | ICP JS SDK Docs"
+[4]: https://5lfyp-mqaaa-aaaag-aleqa-cai.icp0.io/classes/_dfinity_vetkeys.VetKey.html?utm_source=chatgpt.com "VetKey | @dfinity/vetkeys - v0.1.0"
+[5]: https://docs.internetcomputer.org/building-apps/network-features/vetkeys/encrypted-onchain-storage "Encrypted onchain storage | Internet Computer"
