@@ -50,13 +50,14 @@ proc deployExample() =
 
     runCommand("pnpm install --frozen-lockfile")
 
-    runCommand(ICP_PATH & " canister create --all")
-    runCommand(ICP_PATH & " deploy t_ecdsa_backend")
-    runCommand(ICP_PATH & " generate t_ecdsa_backend")
-    runCommand(ICP_PATH & " deploy internet_identity")
-    runCommand(ICP_PATH & " generate internet_identity")
-    runCommand(ICP_PATH & " deploy t_ecdsa_frontend")
-    runCommand(ICP_PATH & " generate t_ecdsa_frontend")
+    # runCommand(ICP_PATH & " canister create --all")
+    # runCommand(ICP_PATH & " deploy t_ecdsa_backend")
+    # runCommand(ICP_PATH & " generate t_ecdsa_backend")
+    # runCommand(ICP_PATH & " deploy internet_identity")
+    # runCommand(ICP_PATH & " generate internet_identity")
+    # runCommand(ICP_PATH & " deploy t_ecdsa_frontend")
+    # runCommand(ICP_PATH & " generate t_ecdsa_frontend")
+    runCommand(ICP_PATH & " deploy -y")
   finally:
     setCurrentDir(originalDir)
 

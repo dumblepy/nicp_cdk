@@ -1,8 +1,8 @@
-import std/strutils
+# import std/strutils
 import std/options
 import std/tables
-import std/sequtils  # mapItのために追加
-import ../../../../src/nicp_cdk
+# import std/sequtils  # mapItのために追加
+import ../../../src/nicp_cdk
 
 type
   EcdsaCurve* {.pure.} = enum
