@@ -1,0 +1,177 @@
+---
+description: fix-vetkey-exampleブランチでの開発時に読み込む
+alwaysApply: false
+---
+fix-vetkey-example ブランチルール
+===
+
+このブランチで実装することは以下の通りです。
+- `examples/vetkey/frontend/app/src/components/PrivateKvRoundtrip.tsx` の Private KV シナリオを、暗号化 UI と復号 UI に分離する。
+- 暗号化処理で生成・取得した「復号に必要な値」を UI 上の `input type="text"` に個別に表示する。
+- 復号ボタンは内部状態の隠れた値ではなく、UI 上の入力欄に表示されている値を読み取って復号し、結果を表示する。
+- 既存の backend API と `examples/vetkey/frontend/app/src/lib/vetkeyCrypto.ts` の暗号化・復号ヘルパーを活かし、バックエンドや暗号ロジックの仕様変更は行わない。
+
+## 進捗
+- [x] 現在のブランチ名と既存ルールを確認する。
+- [x] `PrivateKvRoundtrip.tsx` の現状フローを確認する。
+- [x] 実装方針と設計をブランチルールに記録する。
+- [x] `PrivateKvRoundtrip.tsx` を暗号化 UI と復号 UI に分離する。
+- [x] 復号に必要な値を 4 つの `input type="text"` として UI に表示する。
+- [x] 復号ボタンが入力欄の値を使って復号するようにする。
+- [x] フロントエンドの型チェックまたはビルドで確認する。
+- [x] backend の `controller.nim` / `main.nim` を Private KV API のみに整理した。
+- [x] `controller.nim` の Private KV 実装に `used` を付けて単体チェックの未使用警告を抑えた。
+- [ ] 手動操作で「暗号化」「入力欄の値を使った復号」「エラー表示」を確認する。
+
+## 参考資料
+- `examples/vetkey/frontend/app/src/components/PrivateKvRoundtrip.tsx`
+- `examples/vetkey/frontend/app/src/lib/vetkeyCrypto.ts`
+- `examples/vetkey/frontend/app/src/backend/api/backend.ts`
+- `examples/vetkey/backend/src/controller.nim`
+
+## 調査結果・設計まとめ
+
+### 現状
+
+`PrivateKvRoundtrip.tsx` は `runRoundtrip` の 1 つの操作で以下を連続実行している。
+
+1. transport 鍵ペアを生成する。
+2. `backend.derivePrivateKvKey(transportPublicHex, keyVersion)` を呼び、`encrypted_key_hex` などを取得する。
+3. `encryptPlaintextWithVetkey(transportSecretHex, encrypted_key_hex, plaintext, PRIVATE_KV_DOMAIN_SEP)` で平文を暗号化する。
+4. `backend.storePrivateKv(ciphertext, keyVersion)` で保存する。
+5. `backend.fetchPrivateKv()` で保存済み暗号文を取得する。
+6. `decryptCiphertextWithVetkey(transportSecretHex, encrypted_key_hex, fetchedCiphertext, PRIVATE_KV_DOMAIN_SEP)` で復号する。
+
+現在は暗号化と復号が 1 つのボタンに閉じており、復号に必要な値もユーザーが UI 上で確認・編集できる形になっていない。
+
+### 目標 UI
+
+UI は 2 つの操作領域に分ける。
+
+- 暗号化 UI
+  - `key version（nat64）`
+  - 平文 textarea
+  - 暗号化ボタン
+  - 暗号化結果と復号用入力値の表示
+- 復号 UI
+  - `transportSecretHex` / `encryptedKeyHex` / `ciphertextHex` / `keyVersion` の 4 つの `input type="text"`
+  - 復号ボタン
+  - 復号結果表示
+
+復号 UI の入力欄は、暗号化ボタン実行後に自動入力される。ユーザーが値をコピー、編集、貼り替えできるようにし、復号ボタンは必ずその入力欄の現在値を参照する。
+
+### 復号に必要な値
+
+復号には少なくとも以下が必要になる。
+
+- `transportSecretHex`
+- `encrypted_key_hex`
+- `ciphertext_hex`
+- `domainSep`
+
+ただし `domainSep` は `PRIVATE_KV_DOMAIN_SEP` としてフロントエンド内で固定されているため、UI 入力値に含める必要性は低い。UI で表示する復号用の値は、扱いやすさと改ざん時の検証しやすさを優先し、以下の 4 つを個別の `input type="text"` に入れる方針とする。
+
+- `transportSecretHex`
+- `encryptedKeyHex`
+- `ciphertextHex`
+- `keyVersion`
+
+`keyVersion` は復号自体には直接不要だが、暗号化時の条件確認とログ表示に役立つため含める。
+
+### 状態設計
+
+既存の `busy` は 1 種類だが、UI 分離後は操作ごとの状態がわかるように分ける。
+
+- `encryptBusy: boolean`
+- `decryptBusy: boolean`
+- `keyVersion: string`
+- `plaintext: string`
+- `decryptInput: string`
+- `ciphertextHex: string | null`
+- `decrypted: string | null`
+- `log: string[]`
+
+実装を小さく保つ場合は `busyAction: "encrypt" | "decrypt" | null` でもよい。ボタン disabled 条件は `!backend || busyAction !== null` を基本にする。
+
+### 暗号化処理設計
+
+暗号化ボタンの処理は次の流れにする。
+
+1. `backend` の存在を確認する。
+2. `keyVersion` を trim して `BigInt` 化し、0 以上の整数として検証する。
+3. transport 鍵ペアを生成する。
+4. `derivePrivateKvKey` を呼ぶ。
+5. `context_label` が `${PRIVATE_KV_DOMAIN_SEP}|owner=${owner}` と一致することを確認する。
+6. 平文を UTF-8 bytes に変換して暗号化する。
+7. `storePrivateKv` で保存する。
+8. `ciphertextHex` と復号用の 4 つの値を state に保存し、復号 UI の `input type="text"` に表示する。
+
+暗号化 UI の責務は「暗号文を作って保存し、復号に必要な材料を UI に出す」までにする。暗号化処理内では復号まで行わない。
+
+### 復号処理設計
+
+復号ボタンの処理は次の流れにする。
+
+1. `transportSecretHex`、`encryptedKeyHex`、`ciphertextHex` の各 input を trim して必須検証する。
+2. `keyVersion` は表示と確認用として扱う。
+3. `hexToBytes(ciphertextHex)` で暗号文を bytes に戻す。
+4. `decryptCiphertextWithVetkey(transportSecretHex, encryptedKeyHex, ciphertextBytes, PRIVATE_KV_DOMAIN_SEP)` を呼ぶ。
+5. 復号結果を UTF-8 文字列に変換して表示する。
+
+要件上、復号ボタンは「UI 上の input に表示されている値」を使う必要があるため、暗号化時の hidden な複合 JSON には依存しない。
+
+### fetchPrivateKv の扱い
+
+暗号化後すぐの復号であれば、暗号化時に得た `ciphertextHex` を復号用 JSON に含めるため `fetchPrivateKv` は必須ではない。
+
+ただし Private KV の保存確認を残したい場合は、暗号化処理内で `storePrivateKv` 後に `fetchPrivateKv` を呼び、保存された `ciphertext_hex` がローカルの暗号文と一致することだけ確認する。復号 UI に入れる `ciphertextHex` は、保存確認後の `fetched.ciphertext_hex` を採用すると、実際に保存されている値を復号 UI に渡していることが明確になる。
+
+推奨方針:
+
+- `storePrivateKv` 後に `fetchPrivateKv` で一致確認する。
+- 復号用の `ciphertextHex` は `fetched.ciphertext_hex` を使う。
+- 復号処理では `fetchPrivateKv` を呼ばず、入力欄の値だけを使う。
+
+### 入力検証とエラー表示
+
+- `keyVersion` は空文字なら `"0"` ではなく現状維持で `"0"` 扱いにしてもよいが、UI の意図を明確にするなら空文字はエラーにする。
+- hex 文字列は `hexToBytes` が偶数長チェックを持つ。各 input の空値検証と hex 変換エラーは日本語ログに整形する。
+- `keyVersion` は復号の必須入力ではないが、入力欄として表示し、ログと確認に使う。
+- 復号結果が平文入力と一致するかの検証は、UI 分離後は任意にする。ユーザーが別の復号用データを貼る可能性があるため、復号成功だけを主結果とし、現在の平文入力との一致はログで補助的に表示する。
+
+### 表示設計
+
+- 暗号化ボタン文言: `暗号化して保存`
+- 復号ボタン文言: `入力値で復号`
+- 復号用入力欄ラベル: `transportSecretHex` / `encryptedKeyHex` / `ciphertextHex` / `keyVersion`
+- 暗号文 hex は既存の `<details>` 表示を維持してよい。
+- 復号結果は既存の success 表示を維持する。
+- ログは暗号化・復号で共通でもよいが、操作の分離がわかるように `暗号化:` / `復号:` の接頭辞を付ける。
+
+4 つの `input type="text"` は個別に貼り替えやすく、値の確認もしやすい。復号ボタンが読む正本はこの 4 つの input の現在値に限定する。
+
+### 実装範囲
+
+主な変更対象は `PrivateKvRoundtrip.tsx` のみ。
+
+- 既存の `utf8Bytes`、`utf8String`、`formatIcpAgentError` は再利用する。
+- `vetkeyCrypto.ts` の暗号化・復号ヘルパーは変更しない。
+- backend API 型生成ファイルや Nim backend は変更しない。
+- `console.log` は必要最小限に整理する。秘密値である `transportSecretHex` を console に出すことは避ける。
+
+### 実装結果
+
+- `PrivateKvRoundtrip.tsx` を「暗号化」と「復号」の 2 つの操作領域に分割した。
+- 暗号化後に生成した復号用データを `transportSecretHex` / `encryptedKeyHex` / `ciphertextHex` / `keyVersion` の 4 つの `input type="text"` に自動反映し、その入力欄を復号の唯一の参照元にした。
+- 復号処理は UI 上の 4 つの input を読み取り、hidden な複合 JSON には依存しない形にした。
+- 既存の backend API と `vetkeyCrypto.ts` のヘルパーはそのまま使い、暗号ロジックの仕様は変えていない。
+- backend 側は `storePrivateKv` / `fetchPrivateKv` / `derivePrivateKvKey` に絞り込み、未使用の vetKD デモ API を削除した。
+- `controller.nim` 単体で見たときの未使用警告は `used` pragma で抑え、実装は残したままにした。
+
+### 確認観点
+
+- 暗号化ボタン実行後、4 つの復号用 input に値が表示される。
+- 復号ボタンはその input の値を使って復号し、復号結果を表示する。
+- 各 input の値を壊した場合、日本語のエラーがログに出る。
+- backend 未接続時は両ボタンが disabled になり、既存 UX と矛盾しない。
+- `pnpm` の型チェックまたはビルドが通る。

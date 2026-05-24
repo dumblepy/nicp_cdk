@@ -35,38 +35,70 @@ function formatIcpAgentError(err: unknown): string {
   return err.message;
 }
 
+function requireTrimmedField(value: string, fieldName: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`${fieldName} がありません。`);
+  }
+  return trimmed;
+}
+
 export interface PrivateKvRoundtripProps {
   backend: Backend | null;
 }
+
+type BusyAction = "encrypt" | "decrypt" | null;
 
 export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
   const [keyVersion, setKeyVersion] = useState("1");
   const [plaintext, setPlaintext] = useState(
     "user secret payload for private kv",
   );
-  const [busy, setBusy] = useState(false);
+  const [decryptTransportSecretHex, setDecryptTransportSecretHex] =
+    useState("");
+  const [decryptEncryptedKeyHex, setDecryptEncryptedKeyHex] = useState("");
+  const [decryptCiphertextHex, setDecryptCiphertextHex] = useState("");
+  const [decryptKeyVersion, setDecryptKeyVersion] = useState("");
+  const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [log, setLog] = useState<string[]>([]);
   const [decrypted, setDecrypted] = useState<string | null>(null);
   const [lastCiphertextHex, setLastCiphertextHex] = useState<string | null>(
     null,
   );
 
+  const encryptBusy = busyAction === "encrypt";
+  const decryptBusy = busyAction === "decrypt";
+  const isBusy = busyAction !== null;
+
   const pushLog = (line: string) => {
     setLog((prev) => [...prev, line]);
   };
 
-  const runRoundtrip = async () => {
+  const runEncrypt = async () => {
     if (!backend) {
-      pushLog("バックエンドがありません。Internet Identity でログインしてください。");
-      return;
-    }
-    const kv = BigInt(keyVersion.trim() || "0");
-    if (kv < 0n) {
-      pushLog("key version は 0 以上の整数にしてください。");
+      pushLog("暗号化: バックエンドがありません。Internet Identity でログインしてください。");
       return;
     }
 
-    setBusy(true);
+    const normalizedKeyVersion = keyVersion.trim();
+    if (normalizedKeyVersion.length === 0) {
+      pushLog("暗号化: key version は 0 以上の整数にしてください。");
+      return;
+    }
+
+    let kv: bigint;
+    try {
+      kv = BigInt(normalizedKeyVersion);
+    } catch {
+      pushLog("暗号化: key version は 0 以上の整数にしてください。");
+      return;
+    }
+    if (kv < 0n) {
+      pushLog("暗号化: key version は 0 以上の整数にしてください。");
+      return;
+    }
+
+    setBusyAction("encrypt");
     setLog([]);
     setDecrypted(null);
     setLastCiphertextHex(null);
@@ -74,21 +106,12 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
     try {
       const { transportSecretHex, transportPublicHex } =
         generateTransportKeyPair();
-      pushLog("transport 鍵ペアを生成しました。");
-      console.log("generateTransportKeyPair", {
-        transportPublicHex,
-        transportPublicHexLower: transportPublicHex.trim().toLowerCase(),
-      });      
+      pushLog("暗号化: transport 鍵ペアを生成しました。");
 
       const derive = await backend.derivePrivateKvKey(
         transportPublicHex,
         kv,
       );
-      console.log("derivePrivateKvKey", {
-        derive,
-        owner: derive.owner.toString(),
-        contextLabel: derive.context_label,
-      });
       const ownerStr = derive.owner.toString();
       const expectedCtx = `${PRIVATE_KV_DOMAIN_SEP}|owner=${ownerStr}`;
       if (derive.context_label !== expectedCtx) {
@@ -96,71 +119,89 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
           `context_label が期待と異なります: ${derive.context_label}`,
         );
       }
-      pushLog(`derivePrivateKvKey OK（context: ${derive.context_label}）`);
+      pushLog(`暗号化: derivePrivateKvKey OK（context: ${derive.context_label}）`);
 
-      const pt = utf8Bytes(plaintext);
-      const ciphertext = await encryptPlaintextWithVetkey(
+      const plaintextBytes = utf8Bytes(plaintext);
+      const ciphertextBytes = await encryptPlaintextWithVetkey(
         transportSecretHex,
         derive.encrypted_key_hex,
-        pt,
+        plaintextBytes,
         PRIVATE_KV_DOMAIN_SEP,
       );
-      console.log("=== encryptPlaintextWithVetkey ===", {
-        transportSecretHex,
-        encryptedKeyHex: derive.encrypted_key_hex,
-        plaintextHex: bytesToHex(pt),
-        domainSep: PRIVATE_KV_DOMAIN_SEP,
-      });
-      console.log("ciphertext", {
-        ciphertext,
-        ciphertextHex: bytesToHex(ciphertext),
-      });
-      const localCipherHex = bytesToHex(ciphertext);
-      console.log("localCipherHex", localCipherHex);
-      setLastCiphertextHex(localCipherHex);
-      pushLog("クライアント側で vetKey 素材を用いて暗号化しました。");
+      const localCipherHex = bytesToHex(ciphertextBytes);
+      pushLog("暗号化: クライアント側で vetKey 素材を用いて暗号化しました。");
 
-      await backend.storePrivateKv(ciphertext, kv);
-      pushLog("storePrivateKv を呼び出しました。");
+      await backend.storePrivateKv(ciphertextBytes, kv);
+      pushLog("暗号化: storePrivateKv を呼び出しました。");
 
       const fetched = await backend.fetchPrivateKv();
-      console.log("=== fetchPrivateKv ===");
-      console.log("fetched", {
-        fetched,
-        fetchedCiphertextHex: fetched.ciphertext_hex,
-        fetchedCiphertextHexLower: fetched.ciphertext_hex.trim().toLowerCase(),
-      });
-      const fetchedLower = fetched.ciphertext_hex.trim().toLowerCase();
-      const localLower = localCipherHex.toLowerCase();
-      if (fetchedLower !== localLower) {
+      const fetchedCipherHex = fetched.ciphertext_hex.trim();
+      if (fetchedCipherHex.toLowerCase() !== localCipherHex.toLowerCase()) {
         throw new Error(
           "fetch した ciphertext がローカル暗号文と一致しません。",
         );
       }
-      pushLog("fetchPrivateKv の ciphertext が一致することを確認しました。");
+      pushLog("暗号化: fetchPrivateKv の ciphertext が一致することを確認しました。");
+
+      setLastCiphertextHex(fetchedCipherHex);
+      setDecryptTransportSecretHex(transportSecretHex);
+      setDecryptEncryptedKeyHex(derive.encrypted_key_hex);
+      setDecryptCiphertextHex(fetchedCipherHex);
+      setDecryptKeyVersion(normalizedKeyVersion);
+      pushLog("暗号化: 復号用の 4 つの入力欄へ反映しました。");
+    } catch (e) {
+      pushLog(`暗号化: エラー - ${formatIcpAgentError(e)}`);
+      console.error(e);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const runDecrypt = async () => {
+    if (!backend) {
+      pushLog("復号: バックエンドがありません。Internet Identity でログインしてください。");
+      return;
+    }
+
+    setBusyAction("decrypt");
+    setLog([]);
+    setDecrypted(null);
+
+    try {
+      const transportSecretHex = requireTrimmedField(
+        decryptTransportSecretHex,
+        "transportSecretHex",
+      );
+      const encryptedKeyHex = requireTrimmedField(
+        decryptEncryptedKeyHex,
+        "encryptedKeyHex",
+      );
+      const ciphertextHex = requireTrimmedField(
+        decryptCiphertextHex,
+        "ciphertextHex",
+      );
+      const keyVersion = decryptKeyVersion.trim();
+
+      if (keyVersion.length > 0) {
+        pushLog(`復号: keyVersion=${keyVersion} を確認しました。`);
+      } else {
+        pushLog("復号: keyVersion は未入力ですが、復号は継続します。");
+      }
 
       const decryptedBytes = await decryptCiphertextWithVetkey(
         transportSecretHex,
-        derive.encrypted_key_hex,
-        hexToBytes(fetched.ciphertext_hex),
+        encryptedKeyHex,
+        hexToBytes(ciphertextHex),
         PRIVATE_KV_DOMAIN_SEP,
       );
-      console.log("=== decryptCiphertextWithVetkey ===", {
-        decryptedBytes,
-        decryptedBytesHex: bytesToHex(decryptedBytes),
-        decryptedBytesUtf8: utf8String(decryptedBytes),
-      });
       const out = utf8String(decryptedBytes);
       setDecrypted(out);
-      if (out !== plaintext) {
-        throw new Error("復号結果が入力平文と一致しません。");
-      }
-      pushLog("復号に成功し、平文が一致しました。");
+      pushLog("復号: 復号に成功しました。");
     } catch (e) {
-      pushLog(`エラー: ${formatIcpAgentError(e)}`);
+      pushLog(`復号: エラー - ${formatIcpAgentError(e)}`);
       console.error(e);
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
@@ -170,60 +211,144 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
       <p className="sectionLead">
         テスト{" "}
         <code className="inlineCode">Private KV roundtrip</code>{" "}
-        と同じ手順です。caller ごとのプリンシパルに紐づく KV に、transport
-        鍵で保護された vetKey から導いた素材で暗号化したデータを保存し、取り出して復号します。
+        と同じ手順です。暗号化と復号を分け、暗号化で作った入力値を UI
+        上で確認・編集しながら復号できます。
       </p>
 
-      <label className="fieldLabel" htmlFor="kv-version">
-        key version（nat64）
-      </label>
-      <input
-        id="kv-version"
-        className="input fullWidth"
-        type="text"
-        inputMode="numeric"
-        value={keyVersion}
-        onInput={(e) => setKeyVersion((e.target as HTMLInputElement).value)}
-        disabled={busy || !backend}
-      />
+      <section className="subsection">
+        <h3 className="sectionTitle">暗号化</h3>
 
-      <label className="fieldLabel" htmlFor="kv-plain">
-        平文
-      </label>
-      <textarea
-        id="kv-plain"
-        className="textarea"
-        rows={4}
-        value={plaintext}
-        onInput={(e) =>
-          setPlaintext((e.target as HTMLTextAreaElement).value)
-        }
-        disabled={busy || !backend}
-      />
+        <label className="fieldLabel" htmlFor="kv-version">
+          key version（nat64）
+        </label>
+        <input
+          id="kv-version"
+          className="input fullWidth"
+          type="text"
+          inputMode="numeric"
+          value={keyVersion}
+          onInput={(e) => setKeyVersion((e.target as HTMLInputElement).value)}
+          disabled={isBusy || !backend}
+        />
 
-      <div className="row">
-        <button
-          type="button"
-          className="button"
-          onClick={() => void runRoundtrip()}
-          disabled={busy || !backend}
-        >
-          {busy ? "実行中…" : "暗号化 → 保存 → 取得 → 復号"}
-        </button>
-      </div>
+        <label className="fieldLabel" htmlFor="kv-plain">
+          平文
+        </label>
+        <textarea
+          id="kv-plain"
+          className="textarea"
+          rows={4}
+          value={plaintext}
+          onInput={(e) =>
+            setPlaintext((e.target as HTMLTextAreaElement).value)
+          }
+          disabled={isBusy || !backend}
+        />
 
-      {lastCiphertextHex !== null && (
-        <details className="details">
-          <summary>暗号文（hex）</summary>
-          <pre className="pre mono">{lastCiphertextHex}</pre>
-        </details>
-      )}
+        <div className="row">
+          <button
+            type="button"
+            className="button"
+            onClick={() => void runEncrypt()}
+            disabled={isBusy || !backend}
+          >
+            {encryptBusy ? "暗号化中…" : "暗号化して保存"}
+          </button>
+        </div>
 
-      {decrypted !== null && (
-        <p className="success">
-          <strong>復号結果:</strong> {decrypted}
+        {lastCiphertextHex !== null && (
+          <details className="details">
+            <summary>暗号文（hex）</summary>
+            <pre className="pre mono">{lastCiphertextHex}</pre>
+          </details>
+        )}
+      </section>
+
+      <section className="subsection">
+        <h3 className="sectionTitle">復号</h3>
+        <p className="sectionLead">
+          暗号化後に自動入力される 4 つの値を、そのまま編集して復号できます。
         </p>
-      )}
+
+        <label className="fieldLabel" htmlFor="decrypt-transport-secret-hex">
+          transportSecretHex
+        </label>
+        <input
+          id="decrypt-transport-secret-hex"
+          className="input fullWidth mono"
+          type="text"
+          value={decryptTransportSecretHex}
+          onInput={(e) =>
+            setDecryptTransportSecretHex(
+              (e.target as HTMLInputElement).value,
+            )
+          }
+          disabled={isBusy || !backend}
+          spellCheck={false}
+        />
+
+        <label className="fieldLabel" htmlFor="decrypt-encrypted-key-hex">
+          encryptedKeyHex
+        </label>
+        <input
+          id="decrypt-encrypted-key-hex"
+          className="input fullWidth mono"
+          type="text"
+          value={decryptEncryptedKeyHex}
+          onInput={(e) =>
+            setDecryptEncryptedKeyHex((e.target as HTMLInputElement).value)
+          }
+          disabled={isBusy || !backend}
+          spellCheck={false}
+        />
+
+        <label className="fieldLabel" htmlFor="decrypt-ciphertext-hex">
+          ciphertextHex
+        </label>
+        <input
+          id="decrypt-ciphertext-hex"
+          className="input fullWidth mono"
+          type="text"
+          value={decryptCiphertextHex}
+          onInput={(e) =>
+            setDecryptCiphertextHex((e.target as HTMLInputElement).value)
+          }
+          disabled={isBusy || !backend}
+          spellCheck={false}
+        />
+
+        <label className="fieldLabel" htmlFor="decrypt-key-version">
+          keyVersion
+        </label>
+        <input
+          id="decrypt-key-version"
+          className="input fullWidth mono"
+          type="text"
+          value={decryptKeyVersion}
+          onInput={(e) =>
+            setDecryptKeyVersion((e.target as HTMLInputElement).value)
+          }
+          disabled={isBusy || !backend}
+          spellCheck={false}
+        />
+
+        <div className="row">
+          <button
+            type="button"
+            className="button"
+            onClick={() => void runDecrypt()}
+            disabled={isBusy || !backend}
+          >
+            {decryptBusy ? "復号中…" : "入力値で復号"}
+          </button>
+        </div>
+
+        {decrypted !== null && (
+          <p className="success">
+            <strong>復号結果:</strong> {decrypted}
+          </p>
+        )}
+      </section>
 
       {log.length > 0 && (
         <details className="details" open>

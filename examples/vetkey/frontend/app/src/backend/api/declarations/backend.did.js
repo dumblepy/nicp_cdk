@@ -10,41 +10,6 @@ import { IDL } from '@icp-sdk/core/candid';
 
 export const idlFactory = ({ IDL }) => {
   return IDL.Service({
-    'createPrivateNote' : IDL.Func(
-        [IDL.Text, IDL.Text, IDL.Text, IDL.Text, IDL.Nat64],
-        [
-          IDL.Record({
-            'key_version' : IDL.Nat,
-            'ciphertext_len' : IDL.Nat,
-            'owner' : IDL.Principal,
-            'nonce_len' : IDL.Nat,
-            'note_id' : IDL.Text,
-            'aad_len' : IDL.Nat,
-          }),
-        ],
-        [],
-      ),
-    'createSharedNote' : IDL.Func(
-        [IDL.Text, IDL.Text, IDL.Text, IDL.Text, IDL.Nat64],
-        [
-          IDL.Record({
-            'acl' : IDL.Vec(IDL.Principal),
-            'key_version' : IDL.Nat,
-            'ciphertext_len' : IDL.Nat,
-            'owner' : IDL.Principal,
-            'nonce_len' : IDL.Nat,
-            'note_id' : IDL.Text,
-            'aad_len' : IDL.Nat,
-          }),
-        ],
-        [],
-      ),
-    'deriveKey' : IDL.Func([], [IDL.Vec(IDL.Nat8)], []),
-    'deriveKeyWithTransportPublicKey' : IDL.Func(
-        [IDL.Vec(IDL.Nat8)],
-        [IDL.Vec(IDL.Nat8)],
-        [],
-      ),
     'derivePrivateKvKey' : IDL.Func(
         [IDL.Text, IDL.Nat64],
         [
@@ -59,65 +24,6 @@ export const idlFactory = ({ IDL }) => {
         ],
         [],
       ),
-    'derivePrivateNoteKey' : IDL.Func(
-        [IDL.Principal, IDL.Text, IDL.Text],
-        [
-          IDL.Record({
-            'encrypted_key' : IDL.Vec(IDL.Nat8),
-            'key_version' : IDL.Nat,
-            'input_label' : IDL.Text,
-            'public_key' : IDL.Vec(IDL.Nat8),
-            'owner' : IDL.Principal,
-            'context_label' : IDL.Text,
-            'note_id' : IDL.Text,
-          }),
-        ],
-        [],
-      ),
-    'deriveSharedNoteKey' : IDL.Func(
-        [IDL.Text, IDL.Text],
-        [
-          IDL.Record({
-            'encrypted_key' : IDL.Vec(IDL.Nat8),
-            'key_version' : IDL.Nat,
-            'input_label' : IDL.Text,
-            'public_key' : IDL.Vec(IDL.Nat8),
-            'owner' : IDL.Principal,
-            'context_label' : IDL.Text,
-            'note_id' : IDL.Text,
-          }),
-        ],
-        [],
-      ),
-    'describePrivateNote' : IDL.Func(
-        [IDL.Principal, IDL.Text],
-        [
-          IDL.Record({
-            'key_version' : IDL.Nat,
-            'ciphertext_len' : IDL.Nat,
-            'owner' : IDL.Principal,
-            'nonce_len' : IDL.Nat,
-            'note_id' : IDL.Text,
-            'aad_len' : IDL.Nat,
-          }),
-        ],
-        [],
-      ),
-    'describeSharedNote' : IDL.Func(
-        [IDL.Text],
-        [
-          IDL.Record({
-            'acl' : IDL.Vec(IDL.Principal),
-            'key_version' : IDL.Nat,
-            'ciphertext_len' : IDL.Nat,
-            'owner' : IDL.Principal,
-            'nonce_len' : IDL.Nat,
-            'note_id' : IDL.Text,
-            'aad_len' : IDL.Nat,
-          }),
-        ],
-        [],
-      ),
     'fetchPrivateKv' : IDL.Func(
         [],
         [
@@ -125,66 +31,6 @@ export const idlFactory = ({ IDL }) => {
             'key_version' : IDL.Nat,
             'ciphertext_hex' : IDL.Text,
             'owner' : IDL.Principal,
-          }),
-        ],
-        [],
-      ),
-    'getPublicKey' : IDL.Func([], [IDL.Vec(IDL.Nat8)], []),
-    'grantSharedNoteAccess' : IDL.Func(
-        [IDL.Text, IDL.Principal],
-        [
-          IDL.Record({
-            'acl' : IDL.Vec(IDL.Principal),
-            'key_version' : IDL.Nat,
-            'ciphertext_len' : IDL.Nat,
-            'owner' : IDL.Principal,
-            'nonce_len' : IDL.Nat,
-            'note_id' : IDL.Text,
-            'aad_len' : IDL.Nat,
-          }),
-        ],
-        [],
-      ),
-    'revokeSharedNoteAccess' : IDL.Func(
-        [IDL.Text, IDL.Principal],
-        [
-          IDL.Record({
-            'acl' : IDL.Vec(IDL.Principal),
-            'key_version' : IDL.Nat,
-            'ciphertext_len' : IDL.Nat,
-            'owner' : IDL.Principal,
-            'nonce_len' : IDL.Nat,
-            'note_id' : IDL.Text,
-            'aad_len' : IDL.Nat,
-          }),
-        ],
-        [],
-      ),
-    'rotatePrivateNoteKey' : IDL.Func(
-        [IDL.Principal, IDL.Text, IDL.Nat64],
-        [
-          IDL.Record({
-            'key_version' : IDL.Nat,
-            'ciphertext_len' : IDL.Nat,
-            'owner' : IDL.Principal,
-            'nonce_len' : IDL.Nat,
-            'note_id' : IDL.Text,
-            'aad_len' : IDL.Nat,
-          }),
-        ],
-        [],
-      ),
-    'rotateSharedNoteKey' : IDL.Func(
-        [IDL.Text, IDL.Nat64],
-        [
-          IDL.Record({
-            'acl' : IDL.Vec(IDL.Principal),
-            'key_version' : IDL.Nat,
-            'ciphertext_len' : IDL.Nat,
-            'owner' : IDL.Principal,
-            'nonce_len' : IDL.Nat,
-            'note_id' : IDL.Text,
-            'aad_len' : IDL.Nat,
           }),
         ],
         [],
