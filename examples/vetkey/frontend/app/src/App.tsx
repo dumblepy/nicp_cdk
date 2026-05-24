@@ -34,7 +34,7 @@ export default function App() {
         </div>
         <h1 className="title">vetKey サンプル</h1>
         <p className="subtitle">
-          Internet Identity で認証し、Private KV に vetKey 由来の鍵素材で暗号化したテキストを保存・復号します。
+          Internet Identity で認証し、vetKey 由来の鍵素材でテキストを暗号化・復号します。
         </p>
 
         <section className="section">

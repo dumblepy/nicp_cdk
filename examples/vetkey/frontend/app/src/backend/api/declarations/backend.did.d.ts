@@ -11,7 +11,7 @@ import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
 export interface _SERVICE {
-  'derivePrivateKvKey' : ActorMethod<
+  'derivePrivateKvEnvelope' : ActorMethod<
     [string, bigint],
     {
       'key_version' : bigint,
@@ -20,21 +20,6 @@ export interface _SERVICE {
       'context_label' : string,
       'encrypted_key_hex' : string,
       'public_key_hex' : string,
-    }
-  >,
-  'fetchPrivateKv' : ActorMethod<
-    [],
-    { 'key_version' : bigint, 'ciphertext_hex' : string, 'owner' : Principal }
-  >,
-  'storePrivateKv' : ActorMethod<
-    [Uint8Array, bigint],
-    {
-      'key_version' : bigint,
-      'ciphertext_len' : bigint,
-      'owner' : Principal,
-      'nonce_len' : bigint,
-      'note_id' : string,
-      'aad_len' : bigint,
     }
   >,
 }

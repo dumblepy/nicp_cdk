@@ -1,7 +1,6 @@
 import std/asyncdispatch
 import std/options
 import std/strutils
-import std/tables
 import ../../../../src/nicp_cdk
 import ../../../../src/nicp_cdk/algorithm/hex_bytes
 import ../../../../src/nicp_cdk/canisters/management_canister
@@ -18,24 +17,6 @@ const
 
 
 type
-  PrivateKvStoreSummary = object
-    note_id: string
-    owner: Principal
-    key_version: uint
-    ciphertext_len: uint
-    nonce_len: uint
-    aad_len: uint
-
-  PrivateKvEntry = object
-    owner: Principal
-    key_version: uint
-    ciphertext: seq[uint8]
-
-  PrivateKvSnapshot = object
-    owner: Principal
-    key_version: uint
-    ciphertext_hex: string
-
   PrivateKvEnvelope = object
     owner: Principal
     key_version: uint
@@ -43,10 +24,6 @@ type
     input_label: string
     public_key_hex: string
     encrypted_key_hex: string
-
-
-var
-  privateKvNotes = initTable[string, PrivateKvEntry]()
 
 
 proc hexToBytes(value: string): seq[uint8] =
@@ -117,15 +94,15 @@ proc makeKeyId(): VetKdKeyId =
 
 
 proc getPrivateKvEnvelope(
-  owner: Principal,
+  caller: Principal,
   transportPublicKey: seq[uint8],
   keyVersion: uint
 ): Future[PrivateKvEnvelope] {.async.} =
-  let contextLabel = privateKvContextLabel(owner)
-  let inputLabel = privateKvInputLabel(owner, keyVersion)
+  let contextLabel = privateKvContextLabel(caller)
+  let inputLabel = privateKvInputLabel(caller, keyVersion)
   let contextBytes = encodeLabelBytes(contextLabel)
   let inputBytes = encodeLabelBytes(inputLabel)
-  icEcho "[vetkey-debug] getPrivateKvEnvelope owner=" & owner.text &
+  icEcho "[vetkey-debug] getPrivateKvEnvelope caller=" & caller.text &
     " keyVersion=" & $keyVersion & " vetKdKeyName=" & VetKdKeyName &
     " contextLabel=" & contextLabel & " inputLabel=" & inputLabel &
     " transportPkLen=" & $transportPublicKey.len &
@@ -148,77 +125,38 @@ proc getPrivateKvEnvelope(
   icEcho "[vetkey-debug] getPrivateKvEnvelope vetkd_derive_key ok encryptedKeyLen=" &
     $deriveResult.encrypted_key.len
   result = PrivateKvEnvelope(
-    owner: owner,
+    owner: caller,
     key_version: keyVersion,
     context_label: contextLabel,
     input_label: inputLabel,
     public_key_hex: publicKeyResult.public_key.toHexString(),
     encrypted_key_hex: deriveResult.encrypted_key.toHexString()
   )
-proc storePrivateKvImpl(ciphertext: seq[uint8], keyVersion: uint) {.used.} =
-  try:
-    let owner = Msg.caller()
-    icEcho "[vetkey-debug] storePrivateKv begin caller=" & owner.text &
-      " ciphertextLen=" & $ciphertext.len & " keyVersion=" & $keyVersion
-    let note = PrivateKvEntry(
-      owner: owner,
-      key_version: keyVersion,
-      ciphertext: ciphertext
-    )
-    privateKvNotes[owner.text] = note
-    icEcho "[vetkey-debug] storePrivateKv done noteKey=" & owner.text
-    reply(PrivateKvStoreSummary(
-      note_id: owner.text,
-      owner: owner,
-      key_version: keyVersion,
-      ciphertext_len: uint(ciphertext.len),
-      nonce_len: 0'u,
-      aad_len: 0'u
-    ))
-  except Exception as e:
-    icEcho "[vetkey-debug] storePrivateKv ERROR: " & e.msg
-    reject("Failed to store private kv: " & e.msg)
 
 
-proc fetchPrivateKvImpl() {.used.} =
-  try:
-    let owner = Msg.caller()
-    icEcho "[vetkey-debug] fetchPrivateKv begin caller=" & owner.text
-    let key = owner.text
-    if not privateKvNotes.hasKey(key):
-      raise newException(ValueError, "Private KV not found: owner=" & owner.text)
-    let note = privateKvNotes[key]
-    icEcho "[vetkey-debug] fetchPrivateKv note key_version=" & $note.key_version &
-      " ciphertextLen=" & $note.ciphertext.len
-    reply(PrivateKvSnapshot(
-      owner: note.owner,
-      key_version: note.key_version,
-      ciphertext_hex: note.ciphertext.toHexString()
-    ))
-  except Exception as e:
-    icEcho "[vetkey-debug] fetchPrivateKv ERROR: " & e.msg
-    reject("Failed to fetch private kv: " & e.msg)
+proc derivePrivateKvEnvelope*() {.async.} =
+  let request = Request.new()
+  let transportPublicKeyText = request.getStr(0)
+  let keyVersion = uint(request.getNat64(1))
+  let caller = Msg.caller()
 
-
-proc derivePrivateKvKeyImpl(transportPublicKeyText: string, keyVersion: uint) {.async, used.} =
   let tpPreview =
     if transportPublicKeyText.len <= 32:
       transportPublicKeyText
     else:
       transportPublicKeyText[0..<32] & "..."
-  icEcho "[vetkey-debug] derivePrivateKvKeyImpl begin caller=" & Msg.caller().text &
+  icEcho "[vetkey-debug] derivePrivateKvEnvelope begin caller=" & caller.text &
     " keyVersion=" & $keyVersion & " transportPkTextLen=" & $transportPublicKeyText.len &
     " transportPkTextPrefix=" & tpPreview
   try:
-    let owner = Msg.caller()
     let transportPublicKey = transportPublicKeyBytes(transportPublicKeyText)
-    icEcho "[vetkey-debug] derivePrivateKvKeyImpl transportPkBytesLen=" &
+    icEcho "[vetkey-debug] derivePrivateKvEnvelopeImpl transportPkBytesLen=" &
       $transportPublicKey.len
-    let envelope = await getPrivateKvEnvelope(owner, transportPublicKey, keyVersion)
-    icEcho "[vetkey-debug] derivePrivateKvKeyImpl ok context_label=" &
+    let envelope = await getPrivateKvEnvelope(caller, transportPublicKey, keyVersion)
+    icEcho "[vetkey-debug] derivePrivateKvEnvelopeImpl ok context_label=" &
       envelope.context_label & " encrypted_key_hex_len=" &
       $envelope.encrypted_key_hex.len
     reply(envelope)
   except Exception as e:
-    icEcho "[vetkey-debug] derivePrivateKvKeyImpl ERROR: " & e.msg
-    reject("Failed to derive private kv key: " & e.msg)
+    icEcho "[vetkey-debug] derivePrivateKvEnvelopeImpl ERROR: " & e.msg
+    reject("Failed to derive private kv envelope: " & e.msg)

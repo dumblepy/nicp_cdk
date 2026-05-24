@@ -10,7 +10,7 @@ import { IDL } from '@icp-sdk/core/candid';
 
 export const idlFactory = ({ IDL }) => {
   return IDL.Service({
-    'derivePrivateKvKey' : IDL.Func(
+    'derivePrivateKvEnvelope' : IDL.Func(
         [IDL.Text, IDL.Nat64],
         [
           IDL.Record({
@@ -20,31 +20,6 @@ export const idlFactory = ({ IDL }) => {
             'context_label' : IDL.Text,
             'encrypted_key_hex' : IDL.Text,
             'public_key_hex' : IDL.Text,
-          }),
-        ],
-        [],
-      ),
-    'fetchPrivateKv' : IDL.Func(
-        [],
-        [
-          IDL.Record({
-            'key_version' : IDL.Nat,
-            'ciphertext_hex' : IDL.Text,
-            'owner' : IDL.Principal,
-          }),
-        ],
-        [],
-      ),
-    'storePrivateKv' : IDL.Func(
-        [IDL.Vec(IDL.Nat8), IDL.Nat64],
-        [
-          IDL.Record({
-            'key_version' : IDL.Nat,
-            'ciphertext_len' : IDL.Nat,
-            'owner' : IDL.Principal,
-            'nonce_len' : IDL.Nat,
-            'note_id' : IDL.Text,
-            'aad_len' : IDL.Nat,
           }),
         ],
         [],

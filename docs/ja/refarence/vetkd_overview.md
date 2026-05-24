@@ -33,6 +33,32 @@ vetkd_public_key : (record {
 | `public_key`           | ICP → backend → frontend |          いいえ | `encrypted_key` が正しい vetKey か検証するための公開鍵。                                                                                  |
 | `vetKey`               |           frontend だけが得る |           はい | AES 鍵などを導出する元鍵。backend には渡さない。                                                                                            |
 
+暗号化・復号の実装でよく出てくる変数、値、鍵を日本語名付きで整理するとこうなります。`*_hex` / `*Hex` は、同じ bytes を画面表示やコピー用に 16 進文字列へ変換したものです。
+
+| 公式 API / TypeScript 名 | 日本語名 | 型・表現 | 誰が作る / 持つ | 秘密か | 暗号化時の使い方 | 復号時の使い方 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `key_id` | master key ID / しきい値 master key の識別子 | `{ curve; name }` | backend | いいえ | management canister に渡し、どの subnet の master key から vetKey を導出するか決める。 | 暗号化時と同じ `key_id` を使う。違う `key_id` では別の vetKey になる。 |
+| `context` | 文脈 / 用途分離ラベル | `blob` | backend | いいえ | dapp、用途、caller principal、ACL などを混ぜ、鍵の利用範囲を分離する。 | 暗号化時と同じ `context` を backend が再構成する。 |
+| `input` | 鍵入力 / 個別鍵名 | `Uint8Array` / `blob` | frontend または backend | いいえ | `"note/default"` や resource ID など、欲しい vetKey を識別する。 | 暗号化時と同じ `input` を `decryptAndVerify(...)` に渡す。1 byte でも違うと別鍵になる。 |
+| `transportSecretKey` | 配送秘密鍵 | `TransportSecretKey` | frontend | はい | `TransportSecretKey.random()` で生成し、frontend 内だけに置く。 | `encryptedVetKey.decryptAndVerify(transportSecretKey, publicKey, input)` で encrypted vetKey を復号する。通常は保存しない。 |
+| `transportSecretKeyHex` | 配送秘密鍵 hex | `text` | frontend | はい | デバッグ UI や手動復号 UI で一時秘密鍵を表示・再入力するための表現。 | 復号 UI から読み、`TransportSecretKey.deserialize(...)` などで bytes / key に戻す。公開・ログ出力しない。 |
+| `transportSecretKey.publicKeyBytes()` / `transport_public_key` | 配送公開鍵 | `Uint8Array` / `blob` | frontend | いいえ | backend に渡す。management canister はこの公開鍵宛に vetKey を暗号化して返す。 | 直接は使わない。対応する `transportSecretKey` が encrypted vetKey の復号に必要。 |
+| `transportPublicKeyHex` | 配送公開鍵 hex | `text` | frontend | いいえ | `transport_public_key` を backend API に渡すため、またはログ・UI 表示用に hex 化したもの。 | 通常は使わない。再 derive する場合は改めて新しい transport key pair を作る。 |
+| `encrypted_key` / `encryptedVetKeyBytes` | 暗号化済み vetKey | `Uint8Array` / `blob` | management canister | いいえ、ただし暗号化済み | `vetkd_derive_key` の戻り値。まだ AES 鍵でも平文の vetKey でもない。 | `new EncryptedVetKey(encryptedVetKeyBytes)` で包み、`decryptAndVerify(...)` へ渡す。 |
+| `encrypted_key_hex` / `encryptedVetKeyHex` | 暗号化済み vetKey hex | `text` | backend → frontend | いいえ、ただし暗号化済み | backend が bytes を hex 文字列で返す実装では、frontend がこれを受け取る。 | 復号 UI から読み、bytes に戻して encrypted vetKey として扱う。 |
+| `public_key` / `publicKeyBytes` | vetKD 公開鍵 / 導出公開鍵 | `Uint8Array` / `blob` | management canister | いいえ | 暗号化処理そのものには不要だが、encrypted vetKey を検証可能にするため取得する。 | `DerivedPublicKey.deserialize(publicKeyBytes)` で復元し、`decryptAndVerify(...)` で検証に使う。 |
+| `publicKey` | 導出公開鍵オブジェクト | `DerivedPublicKey` | frontend | いいえ | `publicKeyBytes` から復元する。 | encrypted vetKey が同じ `input` / `context` / `key_id` に対応することを検証する。 |
+| `vetKey` | vetKey / 検証済み派生秘密鍵 | `VetKey` | frontend | はい | `deriveSymmetricKey(...)` や `asDerivedKeyMaterial()` で暗号化用の鍵素材を作る。backend に送らない。 | 同じ手順で再取得し、同じ用途分離ラベルで復号用の鍵素材を作る。 |
+| `domainSep` / `domain separator` | 用途分離ラベル | `string` / bytes | frontend または backend | いいえ | vetKey から「この用途専用」の対称鍵・鍵素材を導出する。例: `"my-private-notes-v1/aes-gcm"`。 | 暗号化時と同じ値を使う。違う値では復号できない。 |
+| `rawAesKey` / `aesKey` | AES 鍵 / 対称暗号鍵 | `Uint8Array` / `CryptoKey` | frontend | はい | WebCrypto の `AES-GCM` で平文を暗号化する。 | WebCrypto の `AES-GCM` で ciphertext を復号する。backend に渡さない。 |
+| `iv` | 初期化ベクトル / nonce | `Uint8Array` | frontend | いいえ | 暗号化ごとにランダム生成し、AES-GCM に渡す。 | 復号に必須。ciphertext と一緒に保存・取得する。 |
+| `plaintext` / `plaintextBytes` | 平文 / 平文 bytes | `string` / `Uint8Array` | frontend / ユーザー | はい | 暗号化前のデータ。canister に送らない。 | 復号結果として frontend だけで得る。 |
+| `ciphertext` / `ciphertextBytes` | 暗号文 | `Uint8Array` / `blob` | frontend | いいえ、ただし秘匿対象 | canister に保存するデータ。 | canister から取得し、AES 鍵または vetKey 由来の鍵素材で復号する。 |
+| `ciphertextHex` | 暗号文 hex | `text` | frontend / backend | いいえ、ただし秘匿対象 | デバッグ UI や保存確認用に暗号文を hex 表示したもの。 | 復号 UI から読み、bytes に戻して復号する。 |
+| `payload = iv || ciphertext` | 保存ペイロード | `Uint8Array` / `blob` | frontend | いいえ、ただし秘匿対象 | 復号に必要な `iv` と暗号文を連結して canister に保存する。 | 先頭 12 bytes を `iv`、残りを `ciphertext` として分ける。 |
+
+この表のうち、本当に secret として扱う必要があるのは `transportSecretKey`、`transportSecretKeyHex`、`vetKey`、`rawAesKey` / `aesKey`、`plaintext` です。`encrypted_key` / `encryptedVetKeyBytes` と `ciphertext` は暗号化済みなので平文ではありませんが、不要に公開すると攻撃面やメタデータ漏洩が増えるため、公開値として雑に扱わない方が安全です。
+
 重要なのは、backend canister は **平文データも vetKey 本体も見ない** ことです。frontend が一時 transport key pair を作り、その公開鍵だけを canister に渡し、返ってきた `encrypted_key` を frontend 側で復号します。公式 docs でも、この transport public key により「frontend だけが復号できる encrypted vetKey」を取得する流れになっています。([internetcomputer.org][2])
 
 ---

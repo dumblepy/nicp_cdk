@@ -52,31 +52,18 @@ function record_opt_to_undefined<T>(arg: T | null): T | undefined {
     return arg == null ? undefined : arg;
 }
 export interface backendInterface {
-    derivePrivateKvKey(arg0: string, arg1: bigint): Promise<{
+    derivePrivateKvEnvelope(arg0: string, arg1: bigint): Promise<{
         key_version: bigint;
         input_label: string;
         owner: Principal;
         context_label: string;
         encrypted_key_hex: string;
         public_key_hex: string;
-    }>;
-    fetchPrivateKv(): Promise<{
-        key_version: bigint;
-        ciphertext_hex: string;
-        owner: Principal;
-    }>;
-    storePrivateKv(arg0: Uint8Array, arg1: bigint): Promise<{
-        key_version: bigint;
-        ciphertext_len: bigint;
-        owner: Principal;
-        nonce_len: bigint;
-        note_id: string;
-        aad_len: bigint;
     }>;
 }
 export class Backend implements backendInterface {
     constructor(private actor: ActorSubclass<_SERVICE>){}
-    async derivePrivateKvKey(arg0: string, arg1: bigint): Promise<{
+    async derivePrivateKvEnvelope(arg0: string, arg1: bigint): Promise<{
         key_version: bigint;
         input_label: string;
         owner: Principal;
@@ -84,26 +71,7 @@ export class Backend implements backendInterface {
         encrypted_key_hex: string;
         public_key_hex: string;
     }> {
-        const result = await this.actor.derivePrivateKvKey(arg0, arg1);
-        return result;
-    }
-    async fetchPrivateKv(): Promise<{
-        key_version: bigint;
-        ciphertext_hex: string;
-        owner: Principal;
-    }> {
-        const result = await this.actor.fetchPrivateKv();
-        return result;
-    }
-    async storePrivateKv(arg0: Uint8Array, arg1: bigint): Promise<{
-        key_version: bigint;
-        ciphertext_len: bigint;
-        owner: Principal;
-        nonce_len: bigint;
-        note_id: string;
-        aad_len: bigint;
-    }> {
-        const result = await this.actor.storePrivateKv(arg0, arg1);
+        const result = await this.actor.derivePrivateKvEnvelope(arg0, arg1);
         return result;
     }
 }

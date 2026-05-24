@@ -19,8 +19,11 @@ fix-vetkey-example ブランチルール
 - [x] 復号に必要な値を 4 つの `input type="text"` として UI に表示する。
 - [x] 復号ボタンが入力欄の値を使って復号するようにする。
 - [x] フロントエンドの型チェックまたはビルドで確認する。
-- [x] backend の `controller.nim` / `main.nim` を Private KV API のみに整理した。
-- [x] `controller.nim` の Private KV 実装に `used` を付けて単体チェックの未使用警告を抑えた。
+- [x] backend の `controller.nim` / `main.nim` を `derivePrivateKvEnvelope` のみに整理した。
+- [x] canister に値を保存する `storePrivateKv` / `fetchPrivateKv` と state を削除した。
+- [x] frontend とテストを canister 保存なしの暗号化・復号フローに更新した。
+- [x] 公式 vetKey ドキュメントの TypeScript 例に合わせ、`PrivateKvRoundtrip.tsx` の処理内命名を `transportSecretKey` / `transportPublicKey` / `encryptedVetKey` 系に寄せた。
+- [x] `docs/ja/refarence/vetkd_overview.md` に vetKey の暗号化・復号で使う値、変数、鍵の日本語名付き整理表を追加した。
 - [ ] 手動操作で「暗号化」「入力欄の値を使った復号」「エラー表示」を確認する。
 
 ## 参考資料
@@ -36,11 +39,10 @@ fix-vetkey-example ブランチルール
 `PrivateKvRoundtrip.tsx` は `runRoundtrip` の 1 つの操作で以下を連続実行している。
 
 1. transport 鍵ペアを生成する。
-2. `backend.derivePrivateKvKey(transportPublicHex, keyVersion)` を呼び、`encrypted_key_hex` などを取得する。
+2. `backend.derivePrivateKvEnvelope(transportPublicHex, keyVersion)` を呼び、`encrypted_key_hex` などを取得する。
 3. `encryptPlaintextWithVetkey(transportSecretHex, encrypted_key_hex, plaintext, PRIVATE_KV_DOMAIN_SEP)` で平文を暗号化する。
-4. `backend.storePrivateKv(ciphertext, keyVersion)` で保存する。
-5. `backend.fetchPrivateKv()` で保存済み暗号文を取得する。
-6. `decryptCiphertextWithVetkey(transportSecretHex, encrypted_key_hex, fetchedCiphertext, PRIVATE_KV_DOMAIN_SEP)` で復号する。
+4. 暗号文を canister に保存せず、UI 上の復号用入力欄へ反映する。
+5. `decryptCiphertextWithVetkey(transportSecretHex, encrypted_key_hex, ciphertext, PRIVATE_KV_DOMAIN_SEP)` で復号する。
 
 現在は暗号化と復号が 1 つのボタンに閉じており、復号に必要な値もユーザーが UI 上で確認・編集できる形になっていない。
 
@@ -100,13 +102,12 @@ UI は 2 つの操作領域に分ける。
 1. `backend` の存在を確認する。
 2. `keyVersion` を trim して `BigInt` 化し、0 以上の整数として検証する。
 3. transport 鍵ペアを生成する。
-4. `derivePrivateKvKey` を呼ぶ。
+4. `derivePrivateKvEnvelope` を呼ぶ。
 5. `context_label` が `${PRIVATE_KV_DOMAIN_SEP}|owner=${owner}` と一致することを確認する。
 6. 平文を UTF-8 bytes に変換して暗号化する。
-7. `storePrivateKv` で保存する。
-8. `ciphertextHex` と復号用の 4 つの値を state に保存し、復号 UI の `input type="text"` に表示する。
+7. `ciphertextHex` と復号用の 4 つの値を state に保持し、復号 UI の `input type="text"` に表示する。
 
-暗号化 UI の責務は「暗号文を作って保存し、復号に必要な材料を UI に出す」までにする。暗号化処理内では復号まで行わない。
+暗号化 UI の責務は「暗号文を作り、復号に必要な材料を UI に出す」までにする。暗号文は canister に保存しない。暗号化処理内では復号まで行わない。
 
 ### 復号処理設計
 
@@ -120,17 +121,17 @@ UI は 2 つの操作領域に分ける。
 
 要件上、復号ボタンは「UI 上の input に表示されている値」を使う必要があるため、暗号化時の hidden な複合 JSON には依存しない。
 
-### fetchPrivateKv の扱い
+### canister 保存 API の扱い
 
-暗号化後すぐの復号であれば、暗号化時に得た `ciphertextHex` を復号用 JSON に含めるため `fetchPrivateKv` は必須ではない。
+このサンプルでは canister に値を保存しない方針に変更したため、`storePrivateKv` / `fetchPrivateKv` は backend API から削除する。
 
-ただし Private KV の保存確認を残したい場合は、暗号化処理内で `storePrivateKv` 後に `fetchPrivateKv` を呼び、保存された `ciphertext_hex` がローカルの暗号文と一致することだけ確認する。復号 UI に入れる `ciphertextHex` は、保存確認後の `fetched.ciphertext_hex` を採用すると、実際に保存されている値を復号 UI に渡していることが明確になる。
+暗号化後すぐの復号であれば、暗号化時に得た `ciphertextHex` を復号用入力欄に入れれば十分である。復号処理でも canister から ciphertext を取得せず、入力欄の値だけを使う。
 
 推奨方針:
 
-- `storePrivateKv` 後に `fetchPrivateKv` で一致確認する。
-- 復号用の `ciphertextHex` は `fetched.ciphertext_hex` を使う。
-- 復号処理では `fetchPrivateKv` を呼ばず、入力欄の値だけを使う。
+- `derivePrivateKvEnvelope` のみを backend API として残す。
+- ciphertext は frontend の state と UI 入力欄にだけ保持する。
+- 復号処理では入力欄の値だけを使う。
 
 ### 入力検証とエラー表示
 
@@ -141,7 +142,7 @@ UI は 2 つの操作領域に分ける。
 
 ### 表示設計
 
-- 暗号化ボタン文言: `暗号化して保存`
+- 暗号化ボタン文言: `暗号化`
 - 復号ボタン文言: `入力値で復号`
 - 復号用入力欄ラベル: `transportSecretHex` / `encryptedKeyHex` / `ciphertextHex` / `keyVersion`
 - 暗号文 hex は既存の `<details>` 表示を維持してよい。
@@ -165,8 +166,9 @@ UI は 2 つの操作領域に分ける。
 - 暗号化後に生成した復号用データを `transportSecretHex` / `encryptedKeyHex` / `ciphertextHex` / `keyVersion` の 4 つの `input type="text"` に自動反映し、その入力欄を復号の唯一の参照元にした。
 - 復号処理は UI 上の 4 つの input を読み取り、hidden な複合 JSON には依存しない形にした。
 - 既存の backend API と `vetkeyCrypto.ts` のヘルパーはそのまま使い、暗号ロジックの仕様は変えていない。
-- backend 側は `storePrivateKv` / `fetchPrivateKv` / `derivePrivateKvKey` に絞り込み、未使用の vetKD デモ API を削除した。
+- backend 側は `derivePrivateKvEnvelope` のみに絞り込み、canister への値保存 API を削除した。
 - `controller.nim` 単体で見たときの未使用警告は `used` pragma で抑え、実装は残したままにした。
+- 公式 vetKD API ドキュメントの TypeScript 例では `transportSecretKey`、`transportSecretKey.publicKeyBytes()`、`encryptedVetKeyBytes`、`encryptedVetKey`、`decryptAndVerify(...)` が使われているため、UI 入力欄と処理内ローカル変数は hex 文字列であることを示す `Hex` suffix を残して `transportSecretKeyHex` / `transportPublicKeyHex` / `encryptedVetKeyHex` 系へ変更した。backend の Candid 互換フィールド `encrypted_key_hex` は API 境界として維持する。
 
 ### 確認観点
 

@@ -3,8 +3,8 @@ import type { Backend } from "../backend/api/backend";
 import {
   PRIVATE_KV_DOMAIN_SEP,
   bytesToHex,
-  decryptCiphertextWithVetkey,
-  encryptPlaintextWithVetkey,
+  decryptCiphertextWithVetkey as decryptCiphertextWithVetKey,
+  encryptPlaintextWithVetkey as encryptPlaintextWithVetKey,
   generateTransportKeyPair,
   hexToBytes,
 } from "../lib/vetkeyCrypto";
@@ -54,9 +54,10 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
   const [plaintext, setPlaintext] = useState(
     "user secret payload for private kv",
   );
-  const [decryptTransportSecretHex, setDecryptTransportSecretHex] =
+  const [decryptTransportSecretKeyHex, setDecryptTransportSecretKeyHex] =
     useState("");
-  const [decryptEncryptedKeyHex, setDecryptEncryptedKeyHex] = useState("");
+  const [decryptEncryptedVetKeyHex, setDecryptEncryptedVetKeyHex] =
+    useState("");
   const [decryptCiphertextHex, setDecryptCiphertextHex] = useState("");
   const [decryptKeyVersion, setDecryptKeyVersion] = useState("");
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
@@ -104,49 +105,41 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
     setLastCiphertextHex(null);
 
     try {
-      const { transportSecretHex, transportPublicHex } =
-        generateTransportKeyPair();
+      const {
+        transportSecretHex: transportSecretKeyHex,
+        transportPublicHex: transportPublicKeyHex,
+      } = generateTransportKeyPair();
       pushLog("暗号化: transport 鍵ペアを生成しました。");
 
-      const derive = await backend.derivePrivateKvKey(
-        transportPublicHex,
+      const deriveKeyResult = await backend.derivePrivateKvEnvelope(
+        transportPublicKeyHex,
         kv,
       );
-      const ownerStr = derive.owner.toString();
+      const ownerStr = deriveKeyResult.owner.toString();
       const expectedCtx = `${PRIVATE_KV_DOMAIN_SEP}|owner=${ownerStr}`;
-      if (derive.context_label !== expectedCtx) {
+      if (deriveKeyResult.context_label !== expectedCtx) {
         throw new Error(
-          `context_label が期待と異なります: ${derive.context_label}`,
+          `context_label が期待と異なります: ${deriveKeyResult.context_label}`,
         );
       }
-      pushLog(`暗号化: derivePrivateKvKey OK（context: ${derive.context_label}）`);
+      pushLog(
+        `暗号化: derivePrivateKvEnvelope OK（context: ${deriveKeyResult.context_label}）`,
+      );
 
       const plaintextBytes = utf8Bytes(plaintext);
-      const ciphertextBytes = await encryptPlaintextWithVetkey(
-        transportSecretHex,
-        derive.encrypted_key_hex,
+      const ciphertextBytes = await encryptPlaintextWithVetKey(
+        transportSecretKeyHex,
+        deriveKeyResult.encrypted_key_hex,
         plaintextBytes,
         PRIVATE_KV_DOMAIN_SEP,
       );
-      const localCipherHex = bytesToHex(ciphertextBytes);
+      const localCiphertextHex = bytesToHex(ciphertextBytes);
       pushLog("暗号化: クライアント側で vetKey 素材を用いて暗号化しました。");
 
-      await backend.storePrivateKv(ciphertextBytes, kv);
-      pushLog("暗号化: storePrivateKv を呼び出しました。");
-
-      const fetched = await backend.fetchPrivateKv();
-      const fetchedCipherHex = fetched.ciphertext_hex.trim();
-      if (fetchedCipherHex.toLowerCase() !== localCipherHex.toLowerCase()) {
-        throw new Error(
-          "fetch した ciphertext がローカル暗号文と一致しません。",
-        );
-      }
-      pushLog("暗号化: fetchPrivateKv の ciphertext が一致することを確認しました。");
-
-      setLastCiphertextHex(fetchedCipherHex);
-      setDecryptTransportSecretHex(transportSecretHex);
-      setDecryptEncryptedKeyHex(derive.encrypted_key_hex);
-      setDecryptCiphertextHex(fetchedCipherHex);
+      setLastCiphertextHex(localCiphertextHex);
+      setDecryptTransportSecretKeyHex(transportSecretKeyHex);
+      setDecryptEncryptedVetKeyHex(deriveKeyResult.encrypted_key_hex);
+      setDecryptCiphertextHex(localCiphertextHex);
       setDecryptKeyVersion(normalizedKeyVersion);
       pushLog("暗号化: 復号用の 4 つの入力欄へ反映しました。");
     } catch (e) {
@@ -168,13 +161,13 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
     setDecrypted(null);
 
     try {
-      const transportSecretHex = requireTrimmedField(
-        decryptTransportSecretHex,
-        "transportSecretHex",
+      const transportSecretKeyHex = requireTrimmedField(
+        decryptTransportSecretKeyHex,
+        "transportSecretKeyHex",
       );
-      const encryptedKeyHex = requireTrimmedField(
-        decryptEncryptedKeyHex,
-        "encryptedKeyHex",
+      const encryptedVetKeyHex = requireTrimmedField(
+        decryptEncryptedVetKeyHex,
+        "encryptedVetKeyHex",
       );
       const ciphertextHex = requireTrimmedField(
         decryptCiphertextHex,
@@ -188,9 +181,9 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
         pushLog("復号: keyVersion は未入力ですが、復号は継続します。");
       }
 
-      const decryptedBytes = await decryptCiphertextWithVetkey(
-        transportSecretHex,
-        encryptedKeyHex,
+      const decryptedBytes = await decryptCiphertextWithVetKey(
+        transportSecretKeyHex,
+        encryptedVetKeyHex,
         hexToBytes(ciphertextHex),
         PRIVATE_KV_DOMAIN_SEP,
       );
@@ -211,7 +204,7 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
       <p className="sectionLead">
         テスト{" "}
         <code className="inlineCode">Private KV roundtrip</code>{" "}
-        と同じ手順です。暗号化と復号を分け、暗号化で作った入力値を UI
+        と同じ手順です。暗号化と復号を分け、暗号化で作った値を UI
         上で確認・編集しながら復号できます。
       </p>
 
@@ -252,7 +245,7 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
             onClick={() => void runEncrypt()}
             disabled={isBusy || !backend}
           >
-            {encryptBusy ? "暗号化中…" : "暗号化して保存"}
+            {encryptBusy ? "暗号化中…" : "暗号化"}
           </button>
         </div>
 
@@ -270,16 +263,19 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
           暗号化後に自動入力される 4 つの値を、そのまま編集して復号できます。
         </p>
 
-        <label className="fieldLabel" htmlFor="decrypt-transport-secret-hex">
-          transportSecretHex
+        <label
+          className="fieldLabel"
+          htmlFor="decrypt-transport-secret-key-hex"
+        >
+          transportSecretKeyHex
         </label>
         <input
-          id="decrypt-transport-secret-hex"
+          id="decrypt-transport-secret-key-hex"
           className="input fullWidth mono"
           type="text"
-          value={decryptTransportSecretHex}
+          value={decryptTransportSecretKeyHex}
           onInput={(e) =>
-            setDecryptTransportSecretHex(
+            setDecryptTransportSecretKeyHex(
               (e.target as HTMLInputElement).value,
             )
           }
@@ -287,16 +283,16 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
           spellCheck={false}
         />
 
-        <label className="fieldLabel" htmlFor="decrypt-encrypted-key-hex">
-          encryptedKeyHex
+        <label className="fieldLabel" htmlFor="decrypt-encrypted-vet-key-hex">
+          encryptedVetKeyHex
         </label>
         <input
-          id="decrypt-encrypted-key-hex"
+          id="decrypt-encrypted-vet-key-hex"
           className="input fullWidth mono"
           type="text"
-          value={decryptEncryptedKeyHex}
+          value={decryptEncryptedVetKeyHex}
           onInput={(e) =>
-            setDecryptEncryptedKeyHex((e.target as HTMLInputElement).value)
+            setDecryptEncryptedVetKeyHex((e.target as HTMLInputElement).value)
           }
           disabled={isBusy || !backend}
           spellCheck={false}
