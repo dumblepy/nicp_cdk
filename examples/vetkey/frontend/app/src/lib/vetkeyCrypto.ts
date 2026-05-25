@@ -36,43 +36,43 @@ export function generateTransportKeyPair(): {
 
 async function derivedKeyMaterialFromEncryptedKey(
   transportSecretHex: string,
-  encryptedKeyHex: string,
+  encryptedVetkeyHex: string,
 ) {
   const transportSecret = TransportSecretKey.deserialize(
     hexToBytes(transportSecretHex),
   );
-  const encryptedKeyBytes = hexToBytes(encryptedKeyHex);
+  const encryptedKeyBytes = hexToBytes(encryptedVetkeyHex);
   const c1 = bls12_381.G1.Point.fromHex(encryptedKeyBytes.slice(0, 48));
   const c3 = bls12_381.G1.Point.fromHex(
     encryptedKeyBytes.slice(48 + 96),
   );
   const sk = bls12_381.G1.Point.Fn.fromBytes(transportSecret.serialize());
   const vetKey = new VetKey(c3.subtract(c1.multiply(sk)));
-  return vetKey.asDerivedKeyMaterial();
+  return await vetKey.asDerivedKeyMaterial();
 }
 
 export async function encryptPlaintextWithVetkey(
   transportSecretHex: string,
-  encryptedKeyHex: string,
+  encryptedVetkeyHex: string,
   plaintext: Uint8Array,
   domainSep: string,
 ): Promise<Uint8Array> {
   const derivedKeyMaterial = await derivedKeyMaterialFromEncryptedKey(
     transportSecretHex,
-    encryptedKeyHex,
+    encryptedVetkeyHex,
   );
-  return derivedKeyMaterial.encryptMessage(plaintext, domainSep);
+  return await derivedKeyMaterial.encryptMessage(plaintext, domainSep);
 }
 
 export async function decryptCiphertextWithVetkey(
   transportSecretHex: string,
-  encryptedKeyHex: string,
+  encryptedVetkeyHex: string,
   ciphertext: Uint8Array,
   domainSep: string,
 ): Promise<Uint8Array> {
   const derivedKeyMaterial = await derivedKeyMaterialFromEncryptedKey(
     transportSecretHex,
-    encryptedKeyHex,
+    encryptedVetkeyHex,
   );
-  return derivedKeyMaterial.decryptMessage(ciphertext, domainSep);
+  return await derivedKeyMaterial.decryptMessage(ciphertext, domainSep);
 }

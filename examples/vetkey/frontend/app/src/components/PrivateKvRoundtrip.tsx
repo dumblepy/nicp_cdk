@@ -3,8 +3,8 @@ import type { Backend } from "../backend/api/backend";
 import {
   PRIVATE_KV_DOMAIN_SEP,
   bytesToHex,
-  decryptCiphertextWithVetkey as decryptCiphertextWithVetKey,
-  encryptPlaintextWithVetkey as encryptPlaintextWithVetKey,
+  decryptCiphertextWithVetkey,
+  encryptPlaintextWithVetkey,
   generateTransportKeyPair,
   hexToBytes,
 } from "../lib/vetkeyCrypto";
@@ -63,9 +63,6 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [log, setLog] = useState<string[]>([]);
   const [decrypted, setDecrypted] = useState<string | null>(null);
-  const [lastCiphertextHex, setLastCiphertextHex] = useState<string | null>(
-    null,
-  );
 
   const encryptBusy = busyAction === "encrypt";
   const decryptBusy = busyAction === "decrypt";
@@ -81,20 +78,20 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
       return;
     }
 
-    const normalizedKeyVersion = keyVersion.trim();
-    if (normalizedKeyVersion.length === 0) {
+    const trimmedKeyVersion = keyVersion.trim();
+    if (trimmedKeyVersion.length === 0) {
       pushLog("暗号化: key version は 0 以上の整数にしてください。");
       return;
     }
 
-    let kv: bigint;
+    let keyVersionNat64: bigint;
     try {
-      kv = BigInt(normalizedKeyVersion);
+      keyVersionNat64 = BigInt(trimmedKeyVersion);
     } catch {
       pushLog("暗号化: key version は 0 以上の整数にしてください。");
       return;
     }
-    if (kv < 0n) {
+    if (keyVersionNat64 < 0n) {
       pushLog("暗号化: key version は 0 以上の整数にしてください。");
       return;
     }
@@ -102,7 +99,6 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
     setBusyAction("encrypt");
     setLog([]);
     setDecrypted(null);
-    setLastCiphertextHex(null);
 
     try {
       const {
@@ -113,7 +109,7 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
 
       const deriveKeyResult = await backend.derivePrivateKvEnvelope(
         transportPublicKeyHex,
-        kv,
+        keyVersionNat64,
       );
       const ownerStr = deriveKeyResult.owner.toString();
       const expectedCtx = `${PRIVATE_KV_DOMAIN_SEP}|owner=${ownerStr}`;
@@ -127,7 +123,7 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
       );
 
       const plaintextBytes = utf8Bytes(plaintext);
-      const ciphertextBytes = await encryptPlaintextWithVetKey(
+      const ciphertextBytes = await encryptPlaintextWithVetkey(
         transportSecretKeyHex,
         deriveKeyResult.encrypted_key_hex,
         plaintextBytes,
@@ -136,11 +132,10 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
       const localCiphertextHex = bytesToHex(ciphertextBytes);
       pushLog("暗号化: クライアント側で vetKey 素材を用いて暗号化しました。");
 
-      setLastCiphertextHex(localCiphertextHex);
       setDecryptTransportSecretKeyHex(transportSecretKeyHex);
       setDecryptEncryptedVetKeyHex(deriveKeyResult.encrypted_key_hex);
       setDecryptCiphertextHex(localCiphertextHex);
-      setDecryptKeyVersion(normalizedKeyVersion);
+      setDecryptKeyVersion(trimmedKeyVersion);
       pushLog("暗号化: 復号用の 4 つの入力欄へ反映しました。");
     } catch (e) {
       pushLog(`暗号化: エラー - ${formatIcpAgentError(e)}`);
@@ -173,15 +168,15 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
         decryptCiphertextHex,
         "ciphertextHex",
       );
-      const keyVersion = decryptKeyVersion.trim();
+      const decryptKeyVersionText = decryptKeyVersion.trim();
 
-      if (keyVersion.length > 0) {
-        pushLog(`復号: keyVersion=${keyVersion} を確認しました。`);
+      if (decryptKeyVersionText.length > 0) {
+        pushLog(`復号: keyVersion=${decryptKeyVersionText} を確認しました。`);
       } else {
         pushLog("復号: keyVersion は未入力ですが、復号は継続します。");
       }
 
-      const decryptedBytes = await decryptCiphertextWithVetKey(
+      const decryptedBytes = await decryptCiphertextWithVetkey(
         transportSecretKeyHex,
         encryptedVetKeyHex,
         hexToBytes(ciphertextHex),
@@ -248,13 +243,6 @@ export function PrivateKvRoundtrip({ backend }: PrivateKvRoundtripProps) {
             {encryptBusy ? "暗号化中…" : "暗号化"}
           </button>
         </div>
-
-        {lastCiphertextHex !== null && (
-          <details className="details">
-            <summary>暗号文（hex）</summary>
-            <pre className="pre mono">{lastCiphertextHex}</pre>
-          </details>
-        )}
       </section>
 
       <section className="subsection">

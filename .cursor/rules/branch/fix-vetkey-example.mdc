@@ -24,6 +24,9 @@ fix-vetkey-example ブランチルール
 - [x] frontend とテストを canister 保存なしの暗号化・復号フローに更新した。
 - [x] 公式 vetKey ドキュメントの TypeScript 例に合わせ、`PrivateKvRoundtrip.tsx` の処理内命名を `transportSecretKey` / `transportPublicKey` / `encryptedVetKey` 系に寄せた。
 - [x] `docs/ja/refarence/vetkd_overview.md` に vetKey の暗号化・復号で使う値、変数、鍵の日本語名付き整理表を追加した。
+- [x] `docs/ja/refarence/vetkey_overview.md` を、canister 保存なしの暗号化・復号シナリオに合わせて整理した。
+- [x] `docs/ja/refarence/vetkey_overview.md` を、サンプル固有の解説ではなく一般的な vetKey 暗号化・復号で扱う値の整理表中心に再構成した。
+- [x] `docs/ja/refarence/vetkey_overview.md` に、キャニスター通信なしで復号するためにブラウザへ保存する最小値と保存形式を追記した。
 - [ ] 手動操作で「暗号化」「入力欄の値を使った復号」「エラー表示」を確認する。
 
 ## 参考資料
