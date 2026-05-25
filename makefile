@@ -11,8 +11,9 @@ diff:
 main:
 	git switch main
 	git pull
+	git pull origin main --tag -f
 	git pull -p
 
 reinstall:
-	-nimble uninstall nicp_cdk -iy
+	-nimble uninstall nicp_cdk -yi
 	nimble install -y

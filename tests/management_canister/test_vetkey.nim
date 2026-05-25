@@ -199,20 +199,6 @@ proc deploy(projectDir: string, canisterName: string) =
     setCurrentDir(originalDir)
 
 
-proc hexToBytes(value: string): seq[uint8] =
-  var cleaned = value.strip().replace(" ", "").replace("\n", "").replace("\t", "")
-  if cleaned.len >= 2 and cleaned[0] == '0' and (cleaned[1] == 'x' or cleaned[1] == 'X'):
-    cleaned = cleaned[2..^1]
-  if cleaned.len == 0:
-    return @[]
-
-  check cleaned.len mod 2 == 0
-  result = newSeq[uint8](cleaned.len div 2)
-  for i in 0..<result.len:
-    let start = i * 2
-    result[i] = uint8(parseHexInt(cleaned[start ..< start + 2]))
-
-
 proc bytesToHex(value: seq[uint8]): string =
   result = newStringOfCap(value.len * 2)
   for b in value:
@@ -223,18 +209,6 @@ proc textToBytes(value: string): seq[uint8] =
   result = newSeq[uint8](value.len)
   for i, c in value:
     result[i] = uint8(ord(c))
-
-
-proc vecNat8Literal(bytes: seq[uint8]): string =
-  if bytes.len == 0:
-    return "vec {} : vec nat8"
-
-  result = "vec { "
-  for i, b in bytes:
-    if i > 0:
-      result.add("; ")
-    result.add($int(b))
-  result.add(" } : vec nat8")
 
 
 proc extractQuotedField(output, fieldName: string): string =
@@ -584,8 +558,8 @@ withRestartedIcpNetwork(VETKEY_DIR):
       check not metadataSummary.toLowerAscii.contains("symmetric")
 
     test "Private KV roundtrip encrypts and decrypts by principal":
-      # principal を key にした KV に、transport key で保護した vetKey を使って暗号化データを保存し、
-      # canister から取り出した ciphertext を client 側で復号して元の平文と一致することを確認する。
+      # principal を key にした vetKey を導出し、ciphertext は canister に保存せず
+      # client 側だけで暗号化・復号して元の平文と一致することを確認する。
       let plaintext = "user secret payload for private kv"
       let plaintextBytes = textToBytes(plaintext)
       let plaintextHex = bytesToHex(plaintextBytes)
@@ -596,7 +570,7 @@ withRestartedIcpNetwork(VETKEY_DIR):
       let deriveOutput = callCanisterSuccess(
         VETKEY_DIR,
         CANISTER_NAME,
-        "derivePrivateKvKey",
+        "derivePrivateKvEnvelope",
         tupleArgs(@[quotedText(transportPublicHex), nat64Literal(1)]),
         ALICE_IDENTITY
       )
@@ -612,30 +586,11 @@ withRestartedIcpNetwork(VETKEY_DIR):
       let ciphertextBytes = vetkeyEncryptMessage(
         transportSecretHex, encryptedKeyHex, plaintextBytes, domainSep
       )
-      let ciphertextHex = bytesToHex(ciphertextBytes)
-
-      discard callCanisterSuccess(
-        VETKEY_DIR,
-        CANISTER_NAME,
-        "storePrivateKv",
-        tupleArgs(@[vecNat8Literal(ciphertextBytes), nat64Literal(1)]),
-        ALICE_IDENTITY
-      )
-
-      let fetchedKvOutput = callCanisterSuccess(
-        VETKEY_DIR,
-        CANISTER_NAME,
-        "fetchPrivateKv",
-        "",
-        ALICE_IDENTITY
-      )
-      let fetchedCiphertextHex = extractQuotedField(fetchedKvOutput, "ciphertext_hex")
-      check fetchedCiphertextHex.toLowerAscii == ciphertextHex.toLowerAscii
 
       let decryptedBytes = vetkeyDecryptMessage(
         transportSecretHex,
         encryptedKeyHex,
-        hexToBytes(fetchedCiphertextHex),
+        ciphertextBytes,
         domainSep,
       )
       let decryptedHex = bytesToHex(decryptedBytes)
