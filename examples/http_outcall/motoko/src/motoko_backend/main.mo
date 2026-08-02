@@ -26,7 +26,7 @@ persistent actor {
 
   type HttpRequestArgs = {
     url : Text;
-    max_response_bytes : ?Nat;
+    max_response_bytes : ?Nat64;
     headers : [HttpHeader];
     body : ?Blob;
     method : HttpMethod;

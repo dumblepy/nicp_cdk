@@ -110,7 +110,7 @@ suite("ecdsa"):
 
       HttpRequestArgs = ref object
         url: string
-        max_response_bytes: Option[uint]
+        max_response_bytes: Option[uint64]
         headers: seq[HttpHeader]
         body: Option[seq[byte]]
         transform: Option[TransformArgs]
@@ -128,7 +128,7 @@ suite("ecdsa"):
 
     let httpRequest = HttpRequestArgs(
       url: url,
-      max_response_bytes: none(uint), # optional for request
+      max_response_bytes: none(uint64), # optional for request
       headers: request_headers,
       body: none(seq[byte]), # optional for request
       httpMethod: HttpMethod.get,
