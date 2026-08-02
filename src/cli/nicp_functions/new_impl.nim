@@ -26,6 +26,9 @@ switch("passL", "-nostartfiles")
 switch("passL", "-Wl,--no-entry")
 switch("passC", "-fno-exceptions")
 
+# Rust crypto libraries may have multiple definitions of the same symbol.
+switch("passL", "-Wl,--allow-multiple-definition")
+
 when defined(release):
   switch("passC", "-Os")
   switch("passC", "-flto")
