@@ -23,7 +23,7 @@ type TransformArgs =
 type HttpRequestArgs =
  record {
    url: text;
-   max_response_bytes: opt nat;
+   max_response_bytes: opt nat64;
    headers: vec HttpHeader;
    body: opt blob;
    method: HttpMethod;

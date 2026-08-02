@@ -52,7 +52,8 @@ type
 
   HttpRequestArgs* = object
     url*: string
-    max_response_bytes*: Option[uint]
+    ## IC management canister `http_request` specifies this as `opt nat64`.
+    max_response_bytes*: Option[uint64]
     headers*: seq[HttpHeader]
     body*: Option[seq[byte]]
     httpMethod*: HttpMethod
@@ -186,11 +187,11 @@ proc `%`*(request: HttpRequestArgs): CandidRecord =
 
   if request.max_response_bytes.isSome:
     fields["max_response_bytes"] = newCandidOptWithInnerType(
-      ctNat,
-      some(newCandidNat(request.max_response_bytes.get))
+      ctNat64,
+      some(newCandidNat64(request.max_response_bytes.get))
     )
   else:
-    fields["max_response_bytes"] = newCandidOptWithInnerType(ctNat, none(CandidValue))
+    fields["max_response_bytes"] = newCandidOptWithInnerType(ctNat64, none(CandidValue))
 
   fields["headers"] = newCandidVec(headersValues)
 
@@ -321,7 +322,7 @@ proc calcHttpRequestSize(request: HttpRequestArgs): uint64 =
 
 proc estimateHttpOutcallCostFallback(request: HttpRequestArgs): uint64 =
   let requestSize = calcHttpRequestSize(request)
-  let maxResponseSize = request.max_response_bytes.get(2_000_000'u).uint64
+  let maxResponseSize = request.max_response_bytes.get(2_000_000'u64)
 
   var cost = HttpOutcallFallbackBaseCycles
   cost = addCap(cost, mulCap(requestSize, HttpOutcallFallbackPerRequestByteCycles))
@@ -342,7 +343,7 @@ when defined(release):
     ## ic0_cost_http_request APIを使用した動的なcycle計算
     try:
       let requestSize = calcHttpRequestSize(request)
-      let maxResponseSize = request.max_response_bytes.get(2_000_000'u).uint64
+      let maxResponseSize = request.max_response_bytes.get(2_000_000'u64)
       
       # IC System APIを使用して正確なコスト計算
       var costBuffer: array[16, uint8]  # 128bit for cycles
@@ -395,7 +396,7 @@ proc httpOutcall*(_:type ManagementCanister, request: HttpRequestArgs): Future[H
           " method=", $request.httpMethod,
           " headers=", request.headers.len,
           " bodyBytes=", (if request.body.isSome: request.body.get.len else: 0),
-          " maxResponseBytes=", request.max_response_bytes.get(2_000_000'u)
+          " maxResponseBytes=", request.max_response_bytes.get(2_000_000'u64)
 
   # Management Canisterの呼び出し（t_ecdsa.nimと同じパターン）
   let mgmtPrincipalBytes: seq[uint8] = @[]

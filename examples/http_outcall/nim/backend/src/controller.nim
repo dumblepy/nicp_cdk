@@ -69,7 +69,7 @@ proc toHttpRequestArgs(
 ): HttpRequestArgs =
   HttpRequestArgs(
     url: url,
-    max_response_bytes: none(uint),
+    max_response_bytes: none(uint64),
     headers: headers,
     body: body,
     httpMethod: httpMethod,
@@ -114,7 +114,7 @@ proc get_httpbin*() {.async.} =
       httpMethod: HttpMethod.GET,
       headers: @[HttpHeader(name: "User-Agent", value: "nim-http-outcall")],
       body: none(seq[uint8]),
-      max_response_bytes: none(uint),
+      max_response_bytes: none(uint64),
       transform: some(defaultTransformRef()),
       # transform: none(HttpTransform),
       is_replicated: some(false)
@@ -139,7 +139,7 @@ proc post_httpbin*() {.async.} =
         HttpHeader(name: "User-Agent", value: "nim-http-outcall")
       ],
       body: some(body),
-      max_response_bytes: none(uint),
+      max_response_bytes: none(uint64),
       transform: some(defaultTransformRef()),
       # transform: none(HttpTransform),
       is_replicated: some(false)
