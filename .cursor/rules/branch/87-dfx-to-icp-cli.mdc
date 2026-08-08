@@ -6,7 +6,7 @@ alwaysApply: false
 ===
 
 このブランチで実装することは以下の通りです。
-- ICP Management Canister が生成した secp256k1 ECDSA 署名を単体テストで検証するための暗号依存を、`nimcrypto` と `secp256k1` から `rustcrypto` (`itsumura-h/nim-rustcrypto`) へ置き換える。
+- ICP Management Canister が生成した secp256k1 ECDSA 署名を単体テストで検証するための暗号依存を、`nimcrypto` と `secp256k1` から `rustcrypto` (`dumblepy/nim-rustcrypto`) へ置き換える。
 - `nimcrypto/keccak` で行っている Keccak-256 ハッシュ処理を `rustcrypto/algorithm/sha3` の Keccak-256 API へ移行する。
 - `secp256k1` で行っている鍵パース、圧縮公開鍵の展開、署名検証、recoverable signature による公開鍵復元を `rustcrypto/algorithm/secp256k1` と必要に応じて `rustcrypto/ethereum` へ移行する。
 - `nicp_cdk.nimble` から `nimcrypto` と `secp256k1` の依存を削除し、`rustcrypto` の GitHub subdir 依存を追加する。
@@ -26,13 +26,13 @@ alwaysApply: false
 - [x] `nimble test` または対象テストを実行して回帰確認
 
 ## 参考資料
-- `nim-rustcrypto`: https://github.com/itsumura-h/nim-rustcrypto
-- `nim-rustcrypto` README: https://github.com/itsumura-h/nim-rustcrypto/blob/main/README.md
-- `nim-rustcrypto` secp256k1 ECDSA: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/secp256k1-ecdsa.md
-- `nim-rustcrypto` secp256k1 DER: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/secp256k1-ecdsa-der.md
-- `nim-rustcrypto` SHA3 / Keccak: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/sha3-keccak.md
-- `nim-rustcrypto` Ethereum helpers: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/ethereum.md
-- `nim-rustcrypto` low-level FFI: https://github.com/itsumura-h/nim-rustcrypto/blob/main/docs/ffi-low-level.md
+- `nim-rustcrypto`: https://github.com/dumblepy/nim-rustcrypto
+- `nim-rustcrypto` README: https://github.com/dumblepy/nim-rustcrypto/blob/main/README.md
+- `nim-rustcrypto` secp256k1 ECDSA: https://github.com/dumblepy/nim-rustcrypto/blob/main/docs/secp256k1-ecdsa.md
+- `nim-rustcrypto` secp256k1 DER: https://github.com/dumblepy/nim-rustcrypto/blob/main/docs/secp256k1-ecdsa-der.md
+- `nim-rustcrypto` SHA3 / Keccak: https://github.com/dumblepy/nim-rustcrypto/blob/main/docs/sha3-keccak.md
+- `nim-rustcrypto` Ethereum helpers: https://github.com/dumblepy/nim-rustcrypto/blob/main/docs/ethereum.md
+- `nim-rustcrypto` low-level FFI: https://github.com/dumblepy/nim-rustcrypto/blob/main/docs/ffi-low-level.md
 - 既存依存定義: `nicp_cdk.nimble`
 - 既存ECDSA実装: `src/nicp_cdk/algorithm/ecdsa.nim`
 - 既存Ethereum実装: `src/nicp_cdk/algorithm/ethereum.nim`
@@ -57,7 +57,7 @@ requires "nimcrypto >= 0.6.3"
 requires "secp256k1 >= 0.5.2"
 
 # 追加
-requires "https://github.com/itsumura-h/nim-rustcrypto?subdir=src/nim-rustcrypto"
+requires "https://github.com/dumblepy/nim-rustcrypto?subdir=src/nim-rustcrypto"
 ```
 
 バージョン固定が必要な場合は、実装時点で利用できる tag を確認し、`#v0.1.1` のように ref を固定することを検討する。2026-05-10 調査時点では GitHub 上の最新 release は `v0.1.1`。

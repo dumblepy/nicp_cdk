@@ -23,9 +23,9 @@ proc cHeaders*(path="/root/.ic-c-headers", force=false) =
   if not dirExists(path):
     createDir(path)
   
-  const ic0Url = "https://raw.githubusercontent.com/itsumura-h/nicp_cdk/refs/heads/main/src/c_headers/ic0.h"
-  const icWasiPolyfillUrl = "https://raw.githubusercontent.com/itsumura-h/nicp_cdk/refs/heads/main/src/c_headers/ic_wasi_polyfill.h"
-  const wasmSymbolUrl = "https://raw.githubusercontent.com/itsumura-h/nicp_cdk/refs/heads/main/src/c_headers/wasm_symbol.h"
+  const ic0Url = "https://raw.githubusercontent.com/dumblepy/nicp_cdk/refs/heads/main/src/c_headers/ic0.h"
+  const icWasiPolyfillUrl = "https://raw.githubusercontent.com/dumblepy/nicp_cdk/refs/heads/main/src/c_headers/ic_wasi_polyfill.h"
+  const wasmSymbolUrl = "https://raw.githubusercontent.com/dumblepy/nicp_cdk/refs/heads/main/src/c_headers/wasm_symbol.h"
   let client = newHttpClient()
   defer: client.close()
   let res1 = downloadFile(client, ic0Url, path / "ic0.h")

@@ -11,4 +11,4 @@ bin           = @["main"]
 # Dependencies
 
 requires "nim >= 2.2.10"
-requires "https://github.com/itsumura-h/nicp_cdk >= 0.1.0"
+requires "https://github.com/dumblepy/nicp_cdk >= 0.1.0"
