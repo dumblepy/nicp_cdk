@@ -98,7 +98,7 @@ curl https://nim-lang.org/choosenim/init.sh -sSf | sh
 ### Install NICP
 
 ```sh
-nimble install https://github.com/itsumura-h/nicp_cdk
+nimble install https://github.com/dumblepy/nicp_cdk
 ```
 
 Now you can use the `nicp` command.

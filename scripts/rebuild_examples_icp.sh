@@ -185,7 +185,7 @@ bin           = @["main"]
 # Dependencies
 
 requires "nim >= $(nim -v | awk '/Nim Compiler Version/{print $4; exit}')"
-requires "https://github.com/itsumura-h/nicp_cdk >= 0.1.0"
+requires "https://github.com/dumblepy/nicp_cdk >= 0.1.0"
 EOF
 }
 
