@@ -5,4 +5,4 @@ build:
   steps:
     - type: script
       commands:
-        - if [ \"${DFX_NETWORK:-local}\" = \"local\" ]; then nicp developmentBuild; else nicp productionBuild; fi
+        - bash -c 'if [ "${DFX_NETWORK:-local}" = "local" ]; then nicp developmentBuild; else nicp productionBuild; fi'

@@ -1,0 +1,122 @@
+---
+description: 104-build-command-errorブランチでの開発時に読み込む
+alwaysApply: false
+---
+ic-wasm optimize 廃止に伴う nicp ビルド移行
+===
+
+このブランチで実装することは以下の通りです。
+
+- `nicp` の本番ビルドを、廃止された `ic-wasm optimize O3` から `wasm-opt -O3`（Binaryen）へ移行する。
+- 本番ビルドで `wasm-opt` が `PATH` 上にないときは、Nim のコンパイル前に原因と導入要件が分かるエラーを出して失敗させる。
+- `nicp new` が生成する `backend/canister.yaml` と、既存 Nim 例の `backend/canister.yaml` を、ネットワークに応じて開発／本番ビルドを選択する同一コマンドへそろえる。
+- 開発コンテナと利用者向けの前提条件を、`wasm-opt` を利用できる状態に更新する。
+
+## 進捗
+
+- [x] `ic-wasm` の optimize 廃止と代替コマンドを一次資料で確認する。
+- [x] `nicp` のビルド経路、生成テンプレート、既存 examples の設定を調査する。
+- [x] 実装方針・詳細設計・検証計画を作成する。
+- [x] `nicp` の本番ビルド経路を `wasm-opt -O3` に置換する。
+- [x] `wasm-opt` 未導入時の fail-fast エラーを実装する。
+- [x] `nicp new` のテンプレートと既存 Nim examples の canister 設定を更新する。
+- [x] コンテナ／ドキュメントの Binaryen 導入要件を更新する。
+- [x] 単体・結合・回帰確認を実施し、結果を記録する（Docker イメージのビルド確認は Docker 未導入のため未実施）。
+
+## 参考資料
+
+- [ic-wasm README: Optimize (removed)](https://github.com/dfinity/ic-wasm#optimize-removed)
+  - `ic-wasm` 0.11.0 以降で `optimize` コマンドは廃止された。
+  - 代替は Binaryen の `wasm-opt -O3 input.wasm -o output.wasm`。
+  - 近年の Binaryen は `icp:*` メタデータのカスタムセクションを最適化後も保持する。
+- `src/cli/nicp_functions/wasm_build.nim`
+  - `nicp developmentBuild`／`nicp productionBuild` が共有する WASM ビルドパイプライン。
+- `src/cli/nicp_functions/new_impl.nim`
+  - `nicp new` が出力する `backend/canister.yaml` の正本テンプレート。
+- `docker/app/develop.Dockerfile`
+  - 開発コンテナで利用可能にする CLI の定義。
+
+## 調査結果・設計まとめ
+
+### 用語と対象範囲
+
+`examples/**/icp.yaml` は canister 一覧・ネットワーク設定のみを持ち、ビルドコマンドは定義していない。実際のビルドコマンドは各 `examples/**/backend/canister.yaml` の `build.steps[].commands` にある。そのため本タスクで変更する設定ファイルは `icp.yaml` ではなく `canister.yaml` とする。
+
+対象は `nicp` と Nim バックエンドを持つ examples である。Motoko の `dfx_hello`、`http_outcall/motoko`、`type_test/motoko`、および `icp.yaml` を持たない旧 `dfx` 形式の examples は対象外とする。`src/cli/ndfx_functions/wasm_build.nim` にも同じ旧コマンドがあるが、本ブランチの要求は `nicp` のため変更対象外とする。
+
+### 現状の問題
+
+`src/cli/nicp_functions/wasm_build.nim` は開発・本番の双方で、`wasi2ic` の直後に次を実行している。
+
+```text
+ic-wasm main.wasm -o main_ic_wasm.wasm optimize O3
+```
+
+`ic-wasm` 0.11.0 以降ではこのサブコマンドが存在しないため、`nicp developmentBuild` と `nicp productionBuild` の両方が失敗する。本番ではその後に `ic-wasm shrink`、最後に Candid メタデータの埋込みを実行する。後者二つは現在も `ic-wasm` が提供しているため維持する。
+
+### 実装方針
+
+1. `compileWasm(release: bool)` の共通パイプラインから、無条件の `ic-wasm ... optimize O3` 呼出しを削除する。
+2. `release == true` の場合のみ、`wasm-opt` の実行可能ファイルを `PATH` から解決する。解決できなければ、Nim コンパイル・中間ファイル削除・出力ファイル更新を始める前に、非 0 で終了する。エラーには少なくとも `wasm-opt`、Binaryen、`PATH` を含める。
+3. 解決できた場合は `wasi2ic` が生成した `main.wasm` に対し、`wasm-opt -O3 main.wasm -o main_ic_wasm.wasm` を実行し、成功後に一時ファイルを `main.wasm` と置き換える。
+4. 続けて既存どおり `ic-wasm shrink`（本番のみ）と `ic-wasm metadata candid:service ...` を実行する。一時出力を経由し、最適化コマンドが失敗した場合は既存の `main.wasm` を置換しない。
+5. 開発ビルドは `wasm-opt` を実行しない。これによりローカル反復開発に Binaryen を必須化せず、廃止済み `ic-wasm optimize` による失敗も解消する。
+
+本番の処理順は次のとおりとする。
+
+```text
+nim c -d:release
+  → wasi2ic
+  → wasm-opt -O3
+  → ic-wasm shrink
+  → ic-wasm metadata candid:service
+  → ICP_WASM_OUTPUT_PATH へコピー（指定時）
+```
+
+### `wasm-opt` のエラー設計
+
+- 検出対象は `PATH` 上の `wasm-opt` のみとし、固定パスや自動インストールは行わない。
+- `productionBuild`／`build` でのみ検証する。`developmentBuild`／`dev` は最適化を行わないため、未導入でも成功できる。
+- 未検出時は標準エラーへ、例えば `Error: wasm-opt was not found on PATH. Install Binaryen and make wasm-opt available on PATH.` を出力し、終了コード 1 を返す。
+- 見つかってもコマンド実行が失敗した場合は、現在の外部コマンド失敗と同じ扱いで、標準出力・標準エラーの内容を表示して当該終了コードを返す。
+
+### canister 設定の設計
+
+`nicp new` の `backendCanisterYaml` を唯一の書式上の正本とし、Nim の既存 examples にも同じシェルコマンドを設定する。
+
+```yaml
+commands:
+  - bash -c 'if [ "${DFX_NETWORK:-local}" = "local" ]; then nicp developmentBuild; else nicp productionBuild; fi'
+```
+
+- `DFX_NETWORK` が未設定または `local` なら `nicp developmentBuild`。
+- それ以外（例: `ic`）なら `nicp productionBuild`。従ってデプロイ向けビルドでは `wasm-opt -O3` が必ず適用される。
+- 変更対象は `examples/arg_msg_reply`、`counter`、`ecdsa_args`、`http_outcall/nim`、`stable_memory`、`type_test/nim`、`vetkey` の各 `backend/canister.yaml`。既に条件分岐を持つ `http_outcall/nim` も、テンプレートと完全に同一の引用・`bash -c` 形式へ正規化する。
+
+### 環境・ドキュメント設計
+
+- `docker/app/develop.Dockerfile` では、最終 `app` ステージに Binaryen を導入し、既存のツール確認群に `wasm-opt --version` を加える。実行時に必要なのは最終ステージであるため、`wasi-tools` ステージへの導入だけでは不十分である。
+- 利用者向けのセットアップ文書には、production build の前提として Binaryen／`wasm-opt` を追加する。OS 固有の導入コマンドを記載する場合は、公式 Binaryen 配布元を参照する。
+
+### 変更ファイル一覧（実装時）
+
+| 区分 | ファイル | 変更内容 |
+| --- | --- | --- |
+| ビルド本体 | `src/cli/nicp_functions/wasm_build.nim` | `ic-wasm optimize` の削除、本番限定の検出と `wasm-opt -O3` 実行 |
+| 生成テンプレート | `src/cli/nicp_functions/new_impl.nim` | ネットワーク別に `developmentBuild`／`productionBuild` を選ぶ `canister.yaml` を維持・正規化 |
+| examples | 上記 7 個の `backend/canister.yaml` | テンプレートと同一の条件付きコマンドへ統一 |
+| 開発環境 | `docker/app/develop.Dockerfile` | Binaryen 導入と `wasm-opt` の確認 |
+| 利用者文書 | 実装時に確認して決定 | 本番ビルドの Binaryen 前提を追記 |
+
+### 検証計画
+
+1. 静的確認: `src/cli/nicp_functions` と対象 examples から `ic-wasm ... optimize` が消え、`ic-wasm shrink` と Candid メタデータ埋込みが残っていることを確認する。
+2. 未導入確認: `PATH` から `wasm-opt` を除外した環境で `nicp productionBuild` を実行し、Nim コンパイル前に指定エラー・非 0 終了となることを確認する。同じ環境で `nicp developmentBuild` が `wasm-opt` 検出を要求しないことも確認する。
+3. 本番成功確認: `wasm-opt` を含む環境で `nicp productionBuild` を実行し、`wasm-opt -O3`、`ic-wasm shrink`、Candid メタデータ付与の順で成功することと、最終 WASM が出力されることを確認する。
+4. 例の統合確認: 各 Nim example について、`DFX_NETWORK=local` では開発ビルド、`DFX_NETWORK=ic` では本番ビルドが選ばれることをコマンド出力またはビルド結果で確認する。
+5. コンテナ確認: 開発コンテナのイメージビルドで `wasm-opt --version` が成功することを確認する。
+
+### 非目標
+
+- `ndfx` のビルド実装、Motoko の recipe、旧 `dfx.json`／`build.sh` 形式の examples は変更しない。
+- Binaryen の自動ダウンロード、バージョン固定、最適化レベルの利用者指定は扱わない。
