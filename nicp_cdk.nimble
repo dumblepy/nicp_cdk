@@ -17,7 +17,7 @@ requires "nim >= 2.2.2"
 requires "cligen >= 1.8.3"
 requires "illwill >= 0.4.1"
 requires "base32 >= 0.1.3"
-requires "https://github.com/dumblepy/nim-rustcrypto?subdir=src/nim-rustcrypto#main"
+requires "https://github.com/dumblepy/nim-rustcrypto#main?subdir=src/nim-rustcrypto"
 
 task test, "Run tests":
   exec """testament p "tests/test_*.nim" """
