@@ -36,6 +36,8 @@ FROM ubuntu:26.04 AS app
 # prevent timezone dialogue
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Binaryen provides wasm-opt for production WASM optimization.
+# https://github.com/WebAssembly/binaryen
 RUN apt update && \
     apt upgrade -y && \
     apt install -y \
@@ -49,7 +51,8 @@ RUN apt update && \
         wget \
         curl \
         git \
-        jq
+        jq \
+        binaryen
 
 # LLVM
 # reference: https://github.com/ICPorts-labs/chico/blob/main/examples/HelloWorld/Dockerfile#L32
@@ -119,7 +122,7 @@ ENV PATH $PATH:/root/.node/bin
 
 # pnpm
 RUN curl -fsSL https://get.pnpm.io/install.sh | bash -s -- -y
-ENV PATH $PATH:/root/.local/share/pnpm
+ENV PATH $PATH:/root/.local/share/pnpm/bin
 
 # ic-mops, compile motoko
 # https://github.com/dfinity/ic-mops
@@ -145,6 +148,7 @@ RUN node -v
 RUN forge --version
 RUN ic-wasm --version
 RUN wasi2ic --version
+RUN wasm-opt --version
 
 
 RUN git config --global --add safe.directory /application

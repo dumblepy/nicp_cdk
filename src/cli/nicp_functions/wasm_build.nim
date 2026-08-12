@@ -84,6 +84,15 @@ proc compileWasm*(release: bool, wasiTmp = "wasi.wasm"): int =
     )
     return 1
 
+  var wasmOptPath = ""
+  if release:
+    wasmOptPath = findExe("wasm-opt")
+    if wasmOptPath.len == 0:
+      stderr.writeLine(
+        "Error: wasm-opt was not found on PATH. Install Binaryen and make wasm-opt available on PATH."
+      )
+      return 1
+
   let outputPath = resolveOutputPath(originalDir)
 
   setCurrentDir(projectDir)
@@ -125,13 +134,16 @@ proc compileWasm*(release: bool, wasiTmp = "wasi.wasm"): int =
     removeFile(wasiTmp)
 
   const icWasmTmp = "main_ic_wasm.wasm"
-  let optimizeCmd = "ic-wasm main.wasm -o " & quoteShell(icWasmTmp) & " optimize O3"
-  echo optimizeCmd
-  let (optOut, optExit) = execCmdEx(optimizeCmd)
-  if optExit != 0:
-    stderr.writeLine(optOut)
-    return optExit
-  moveFile(icWasmTmp, "main.wasm")
+
+  if release:
+    let optimizeCmd = quoteShell(wasmOptPath) & " -O3 " & quoteShell("main.wasm") &
+      " -o " & quoteShell(icWasmTmp)
+    echo optimizeCmd
+    let (optOut, optExit) = execCmdEx(optimizeCmd)
+    if optExit != 0:
+      stderr.writeLine(optOut)
+      return optExit
+    moveFile(icWasmTmp, "main.wasm")
 
   if release:
     let shrinkCmd = "ic-wasm main.wasm -o " & quoteShell(icWasmTmp) & " shrink"

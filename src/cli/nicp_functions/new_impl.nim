@@ -74,7 +74,7 @@ build:
   steps:
     - type: script
       commands:
-        - bash -c 'if [ \"${DFX_NETWORK:-local}\" = \"local\" ]; then nicp developmentBuild; else nicp productionBuild; fi'
+        - bash -c 'if [ "${DFX_NETWORK:-local}" = "local" ]; then nicp developmentBuild; else nicp productionBuild; fi'
 """
 
 const backendGitignore = """
@@ -216,6 +216,18 @@ proc renderIcpYaml(hasFrontend: bool): string =
 canisters:
   - backend
   - frontend
+
+networks:
+  - name: local
+    mode: managed
+    gateway:
+      bind: "0.0.0.0"
+      port: 8000
+    ii: true # iiが有効になる。 http://id.ai.localhost:8000/#authorize
+
+environments:
+  - name: local
+    network: local
 """
   else:
     result = """
@@ -223,6 +235,18 @@ canisters:
 
 canisters:
   - backend
+
+networks:
+  - name: local
+    mode: managed
+    gateway:
+      bind: "0.0.0.0"
+      port: 8000
+    ii: true # iiが有効になる。 http://id.ai.localhost:8000/#authorize
+
+environments:
+  - name: local
+    network: local
 """
 
 proc renderBackendReadme(): string =
