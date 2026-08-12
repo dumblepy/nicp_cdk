@@ -5,6 +5,7 @@ author        = "@dumblepytech1 as 'medy'"
 description   = "Internet Computer CDK for Nim"
 license       = "MIT"
 srcDir        = "src"
+installExt    = @["nim", "nims"]
 bin           = @["cli/nicp", "cli/ndfx"]
 backend       = "c"
 binDir        = "src/bin"
