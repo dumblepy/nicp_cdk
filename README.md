@@ -21,6 +21,7 @@ Another motivational essay:
 - [WASI SDK (includes Clang)](https://github.com/WebAssembly/wasi-sdk)  
 - [ic-wasi-polyfill](https://github.com/wasm-forge/ic-wasi-polyfill)  
 - [wasi2ic](https://github.com/wasm-forge/wasi2ic)  
+- [Binaryen (`wasm-opt`)](https://github.com/WebAssembly/binaryen) (required for production builds)
 - [Internet Computer SDK](https://internetcomputer.org/docs/current/developer-docs/setup/install/sdk-install)  
 
 ### Optional
@@ -45,7 +46,8 @@ apt install -y \
   xz-utils \
   wget \
   curl \
-  git
+  git \
+  binaryen
 ```
 
 ### Install Rust
