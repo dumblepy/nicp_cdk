@@ -1,0 +1,369 @@
+結論として、`nicp_cdk` に追加するなら **Management Canister 経由ではなく、ICP System API の `ic0.env_var_*` を直接ラップする設計**が適切です。
+
+現在の ICP System API には、環境変数用に `env_var_count / env_var_name_size / env_var_name_copy / env_var_name_exists / env_var_value_size / env_var_value_copy` が正式に用意されています。つまり `icp.yaml` の canister settings に設定された環境変数を、Wasm 内から直接取得できます。 ([インターネットコンピュータ][1])
+
+### 推奨アーキテクチャ
+
+`nicp_cdk` はすでに、
+
+```text
+ICP System API
+    ↓
+src/c_headers/ic0.h
+    ↓
+src/nicp_cdk/ic0/ic0.nim
+    ↓
+高レベル Nim API
+```
+
+という構造になっています。`ic0.h` は `WASM_SYMBOL_IMPORTED("ic0", ...)` で ICP System API を import し、Nim 側が `importc` でそれを呼び出しています。
+
+したがって環境変数も同じ3層で実装するのがよいです。
+
+まず `src/c_headers/ic0.h` に System API を追加します。
+
+```c
+// Environment Variables API
+uint32_t ic0_env_var_count()
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_count");
+
+uint32_t ic0_env_var_name_size(uint32_t index)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_name_size");
+
+void ic0_env_var_name_copy(
+    uint32_t index,
+    uint32_t dst,
+    uint32_t offset,
+    uint32_t size)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_name_copy");
+
+uint32_t ic0_env_var_name_exists(
+    uint32_t name_src,
+    uint32_t name_size)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_name_exists");
+
+uint32_t ic0_env_var_value_size(
+    uint32_t name_src,
+    uint32_t name_size)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_value_size");
+
+void ic0_env_var_value_copy(
+    uint32_t name_src,
+    uint32_t name_size,
+    uint32_t dst,
+    uint32_t offset,
+    uint32_t size)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_value_copy");
+```
+
+同時に `src/nicp_cdk/ic0/ic0.txt` にも追加します。このリポジトリでは `ic0.nim` は `ic0.txt` から生成する前提になっているので、`ic0.nim` だけを直接変更するのは避けた方がいいです。
+
+例えば、
+
+```text
+ic0.env_var_count : () -> I;
+ic0.env_var_name_size : (index : I) -> I;
+ic0.env_var_name_copy : (index : I, dst : I, offset : I, size : I) -> ();
+ic0.env_var_name_exists : (name_src : I, name_size : I) -> i32;
+ic0.env_var_value_size : (name_src : I, name_size : I) -> I;
+ic0.env_var_value_copy : (name_src : I, name_size : I, dst : I, offset : I, size : I) -> ();
+```
+
+Nim 側では既存ルールに従って、だいたいこうなります。
+
+```nim
+proc ic0_env_var_count*(): int
+  {.header: HEADER_IC0_H, importc.}
+
+proc ic0_env_var_name_size*(index: int): int
+  {.header: HEADER_IC0_H, importc.}
+
+proc ic0_env_var_name_copy*(
+  index: int,
+  dst: int,
+  offset: int,
+  size: int
+)
+  {.header: HEADER_IC0_H, importc.}
+
+proc ic0_env_var_name_exists*(
+  nameSrc: int,
+  nameSize: int
+): uint32
+  {.header: HEADER_IC0_H, importc.}
+
+proc ic0_env_var_value_size*(
+  nameSrc: int,
+  nameSize: int
+): int
+  {.header: HEADER_IC0_H, importc.}
+
+proc ic0_env_var_value_copy*(
+  nameSrc: int,
+  nameSize: int,
+  dst: int,
+  offset: int,
+  size: int
+)
+  {.header: HEADER_IC0_H, importc.}
+```
+
+ICP の仕様上 `I` は Wasm memory のビット幅に応じて `i32` または `i64` ですが、現在の `nicp_cdk` はこの層を Wasm32 の `uint32_t` / Nim `int` として扱っているので、まずは既存設計に合わせるのが妥当です。 ([インターネットコンピュータ][2])
+
+### 高レベルAPIは `IcEnv` を作るのがよい
+
+個人的には `ic_api.nim` に `getEnv()` を直接追加するより、
+
+```text
+src/nicp_cdk/environment.nim
+```
+
+を新設する方を推します。
+
+理由は、Nim 標準ライブラリにも OS プロセス環境変数の `getEnv` があり、**ホストOSの環境変数とCanister環境変数を区別した方がAPIとして明確**だからです。
+
+また、このリポジトリではすでに
+
+```nim
+Msg.caller()
+```
+
+のような擬似名前空間的な API を採用しています。
+
+なので、
+
+```nim
+type IcEnv* = object
+
+proc contains*(_: type IcEnv, name: string): bool
+proc get*(_: type IcEnv, name: string): Option[string]
+proc getOrDefault*(
+  _: type IcEnv,
+  name: string,
+  defaultValue: string
+): string
+
+proc names*(_: type IcEnv): seq[string]
+proc all*(_: type IcEnv): seq[(string, string)]
+```
+
+くらいが扱いやすいと思います。
+
+利用側は、
+
+```nim
+let env = IcEnv.get("APP_ENV")
+
+if env.isSome:
+  if env.get == "production":
+    # production
+  else:
+    # local / staging
+```
+
+あるいは、
+
+```nim
+let env = IcEnv.getOrDefault("APP_ENV", "local")
+```
+
+とできます。
+
+`Option[string]` にするのは重要です。環境変数には空文字列 `""` も設定できるため、
+
+```nim
+get("FOO") == ""
+```
+
+だけでは
+
+```text
+FOO が存在しない
+```
+
+と
+
+```text
+FOO=""
+```
+
+を区別できないからです。
+
+### `get()` の中身
+
+ここは System API の仕様上、一点重要です。
+
+`ic0.env_var_value_size()` は**存在しない名前を渡すと trap**します。一方 `ic0.env_var_name_exists()` は存在しなければ `0` を返します。したがって、必ず `name_exists` → `value_size` → `value_copy` の順にします。 ([インターネットコンピュータ][1])
+
+```nim
+import std/options
+import ./ic0/ic0
+
+type IcEnv* = object
+
+proc contains*(_: type IcEnv, name: string): bool =
+  let cName = name.cstring
+  let src = cast[int](cName)
+
+  ic0_env_var_name_exists(src, name.len) != 0
+
+
+proc get*(_: type IcEnv, name: string): Option[string] =
+  let cName = name.cstring
+  let src = cast[int](cName)
+
+  if ic0_env_var_name_exists(src, name.len) == 0:
+    return none(string)
+
+  let size = ic0_env_var_value_size(src, name.len)
+
+  if size == 0:
+    return some("")
+
+  var value = newString(size)
+
+  ic0_env_var_value_copy(
+    src,
+    name.len,
+    ptrToInt(addr value[0]),
+    0,
+    size
+  )
+
+  return some(value)
+```
+
+この「サイズ取得 → Nim側でメモリ確保 → copy」という方式は、既存の `Msg.caller()` でもすでに使われています。
+
+列挙も同じです。
+
+```nim
+proc names*(_: type IcEnv): seq[string] =
+  let count = ic0_env_var_count()
+
+  result = newSeqOfCap[string](count)
+
+  for i in 0..<count:
+    let size = ic0_env_var_name_size(i)
+
+    if size == 0:
+      result.add("")
+      continue
+
+    var name = newString(size)
+
+    ic0_env_var_name_copy(
+      i,
+      ptrToInt(addr name[0]),
+      0,
+      size
+    )
+
+    result.add(name)
+```
+
+ICP 側もこの `count → name_size → name_copy` 方式を、環境変数列挙の正式APIとして定義しています。 ([インターネットコンピュータ][1])
+
+### `ic_api.nim` ではなく `environment.nim` を推す理由
+
+現在の `ic_api.nim` は `icEcho` / `devEcho` だけの非常に薄いモジュールです。
+
+環境変数は今後、
+
+```nim
+IcEnv.contains()
+IcEnv.get()
+IcEnv.names()
+IcEnv.all()
+IcEnv.getCanisterId()
+```
+
+などに拡張しやすいので、独立させた方が構造が崩れません。
+
+トップレベルでは、
+
+```nim
+import ./nicp_cdk/environment
+export environment
+```
+
+を `src/nicp_cdk.nim` に追加すれば、
+
+```nim
+import nicp_cdk
+
+let env = IcEnv.get("APP_ENV")
+```
+
+で使えるようになります。現在も各機能をトップレベルで import/export する構造です。
+
+### 変更対象はこのあたり
+
+最初のPRなら、変更範囲はこの6点に絞るのがよいです。
+
+* `src/c_headers/ic0.h` — raw System API import
+* `src/nicp_cdk/ic0/ic0.txt` — System API 定義のsource
+* `src/nicp_cdk/ic0/ic0.nim` — 再生成
+* `src/nicp_cdk/environment.nim` — 高レベルAPI
+* `src/nicp_cdk.nim` — export
+* integration test / example — 実際のICP runtimeで検証
+
+なお `nicp c-headers` 系の処理は `src/c_headers/ic0.h` をGitHubの `main` からダウンロードしているので、ヘッダの取得ロジック自体を変更する必要はありません。既存ユーザーがローカルに古い `ic0.h` を持っているケースだけ更新方法を考える必要があります。
+
+### テストは integration test を重視したい
+
+これは普通の Nim 関数ではなく ICP runtime の `ic0` import を呼ぶ機能なので、単体テストだけでは不十分です。
+
+例えばテスト用 Canister に、
+
+```yaml
+settings:
+  environment_variables:
+    APP_ENV: "test"
+    EMPTY_VALUE: ""
+    JAPANESE_VALUE: "日本語"
+```
+
+を設定して、
+
+```nim
+IcEnv.get("APP_ENV")          # some("test")
+IcEnv.get("MISSING")          # none
+IcEnv.get("EMPTY_VALUE")      # some("")
+IcEnv.get("JAPANESE_VALUE")   # some("日本語")
+IcEnv.contains("APP_ENV")     # true
+IcEnv.names()                 # APP_ENV 等を含む
+```
+
+を実際のローカルICP network上で確認するのが良いです。
+
+もう一つ注意点があります。これらの System API は通常の `init` / query / update 等では使えますが、**Wasm の `(start)` 関数内から呼ぶと trap します**。したがって、Nim のグローバル初期化時に
+
+```nim
+let env = IcEnv.get("APP_ENV")
+```
+
+のように評価される設計にはしない方が安全です。メソッド実行時や `canister_init` 相当の処理で読む形にします。ICP仕様でも環境変数APIは `(start)` context では trap すると定義されています。 ([インターネットコンピュータ][2])
+
+そして、この機能の意味はあくまで、
+
+```text
+icp.yaml
+  ↓
+canister settings.environment_variables
+  ↓
+ICP runtime
+  ↓
+ic0.env_var_*
+  ↓
+IcEnv.get()
+```
+
+です。
+
+**`ICP_CLI_ENVIRONMENT` のようなビルドプロセス側のOS環境変数をCanisterから読む機能ではありません。** ビルド時変数が必要なら別途コンパイル時に埋め込む仕組みが必要です。
+
+最初の実装スコープとしては、`contains / get / getOrDefault / names` の4つまでにしておくのが適切だと思います。`PUBLIC_CANISTER_ID:<name>` を `Principal` に変換する `IcEnv.getCanisterId("backend")` のような `icp-cli` 特化APIは、その上に第2段階で載せる方が、CDKの汎用性を保てます。
+
+[1]: https://legacy.internetcomputer.org/docs/references/ic-interface-spec?utm_source=chatgpt.com "The Internet Computer Interface Specification | Internet Computer"
+[2]: https://legacy.internetcomputer.org/docs/references/ic-interface-spec "The Internet Computer Interface Specification | Internet Computer"

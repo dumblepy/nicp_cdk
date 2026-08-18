@@ -11,5 +11,6 @@ import ./nicp_cdk/ic_types/ic_text; export ic_text;
 import ./nicp_cdk/ic_types/ic_variant; export ic_variant;
 import ./nicp_cdk/ic_types/ic_func; export ic_func;
 import ./nicp_cdk/ic_api; export ic_api;
+import ./nicp_cdk/environment; export environment;
 import ./nicp_cdk/async/ic_async; export ic_async;
 import ./nicp_cdk/canisters/management_canister; export management_canister;

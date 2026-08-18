@@ -54,3 +54,9 @@ proc ic0_cost_sign_with_schnorr*(src: int, size: int, algorithm: uint32, dst: in
 proc ic0_cost_vetkd_derive_encrypted_key*(src: int, size: int, vetkd_curve: uint32, dst: int): uint32 {.header:HEADER_IC0_H, importc.}
 proc ic0_debug_print*(src: int, size: int) {.header:HEADER_IC0_H, importc.}
 proc ic0_trap*(src: int, size: int) {.header:HEADER_IC0_H, importc.}
+proc ic0_env_var_count*(): int {.header:HEADER_IC0_H, importc.}
+proc ic0_env_var_name_size*(index: int): int {.header:HEADER_IC0_H, importc.}
+proc ic0_env_var_name_copy*(index: int, dst: int, offset: int, size: int) {.header:HEADER_IC0_H, importc.}
+proc ic0_env_var_name_exists*(name_src: int, name_size: int): uint32 {.header:HEADER_IC0_H, importc.}
+proc ic0_env_var_value_size*(name_src: int, name_size: int): int {.header:HEADER_IC0_H, importc.}
+proc ic0_env_var_value_copy*(name_src: int, name_size: int, dst: int, offset: int, size: int) {.header:HEADER_IC0_H, importc.}
