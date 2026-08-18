@@ -189,6 +189,27 @@ void ic0_debug_print(uint32_t src, uint32_t size)
 [[noreturn]] void ic0_trap(uint32_t src, uint32_t size)
     WASM_SYMBOL_IMPORTED("ic0", "trap");
 
+// Environment Variables API
+uint32_t ic0_env_var_count()
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_count");
+
+uint32_t ic0_env_var_name_size(uint32_t index)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_name_size");
+
+void ic0_env_var_name_copy(uint32_t index, uint32_t dst, uint32_t offset,
+                           uint32_t size)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_name_copy");
+
+uint32_t ic0_env_var_name_exists(uint32_t name_src, uint32_t name_size)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_name_exists");
+
+uint32_t ic0_env_var_value_size(uint32_t name_src, uint32_t name_size)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_value_size");
+
+void ic0_env_var_value_copy(uint32_t name_src, uint32_t name_size,
+                            uint32_t dst, uint32_t offset, uint32_t size)
+    WASM_SYMBOL_IMPORTED("ic0", "env_var_value_copy");
+
 #ifdef __cplusplus
 }
 #endif

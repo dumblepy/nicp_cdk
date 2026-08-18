@@ -15,3 +15,6 @@ node_modules
 .pnpm-store
 .nimcache
 .diff
+nimble.develop
+nimble.paths
+nimbledeps

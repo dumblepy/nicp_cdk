@@ -1,0 +1,17 @@
+# Various IDEs and editors
+.vscode/
+.idea/
+**/*~
+
+# Mac OSX temporary files
+.DS_Store
+**/.DS_Store
+
+# environment variables
+.env
+
+# Nim and WASM build artifacts
+.nimcache/
+*.wasm
+*.wat
+wasi.wasm

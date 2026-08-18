@@ -105,7 +105,8 @@ ENV PATH $PATH:/root/.nimble/bin
 # https://github.com/nim-lang/langserver/releases/latest
 WORKDIR /root
 ARG NIM_LANG_SERVER_VERSION="1.12.0"
-RUN curl -o nimlangserver.tar.gz -L https://github.com/nim-lang/langserver/releases/download/v${NIM_LANG_SERVER_VERSION}/nimlangserver-linux-amd64.tar.gz
+# RUN curl -o nimlangserver.tar.gz -L https://github.com/nim-lang/langserver/releases/download/v${NIM_LANG_SERVER_VERSION}/nimlangserver-linux-amd64.tar.gz
+RUN curl -o nimlangserver.tar.gz -L https://github.com/nim-lang/langserver/releases/download/latest/nimlangserver-linux-arm64.tar.gz
 RUN tar zxf nimlangserver.tar.gz
 RUN rm -f nimlangserver.tar.gz
 RUN mv nimlangserver /root/.nimble/bin/
