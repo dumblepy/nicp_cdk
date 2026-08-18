@@ -223,11 +223,38 @@ networks:
     gateway:
       bind: "0.0.0.0"
       port: 8000
-    ii: true # iiが有効になる。 http://id.ai.localhost:8000/#authorize
+    ii: true # http://id.ai.localhost:8000/#authorize
 
 environments:
   - name: local
     network: local
+    canisters:
+      - backend
+      - frontend
+    settings:
+      backend:
+        environment_variables:
+          APP_ENV: "local"
+
+  - name: staging
+    network: ic
+    canisters:
+      - backend
+      - frontend
+    settings:
+      backend:
+        environment_variables:
+          APP_ENV: "staging"
+
+  - name: production
+    network: ic
+    canisters:
+      - backend
+      - frontend
+    settings:
+      backend:
+        environment_variables:
+          APP_ENV: "production"
 """
   else:
     result = """
@@ -242,11 +269,35 @@ networks:
     gateway:
       bind: "0.0.0.0"
       port: 8000
-    ii: true # iiが有効になる。 http://id.ai.localhost:8000/#authorize
+    ii: true # http://id.ai.localhost:8000/#authorize
 
 environments:
   - name: local
     network: local
+    canisters:
+      - backend
+    settings:
+      backend:
+        environment_variables:
+          APP_ENV: "local"
+
+  - name: staging
+    network: ic
+    canisters:
+      - backend
+    settings:
+      backend:
+        environment_variables:
+          APP_ENV: "staging"
+
+  - name: production
+    network: ic
+    canisters:
+      - backend
+    settings:
+      backend:
+        environment_variables:
+          APP_ENV: "production"
 """
 
 proc renderBackendReadme(): string =

@@ -10,7 +10,7 @@ networks:
     gateway:
       bind: "0.0.0.0"
       port: 8000
-    ii: true # iiが有効になる。 http://id.ai.localhost:8000/#authorize
+    ii: true # http://id.ai.localhost:8000/#authorize
 
 environments:
   - name: local
