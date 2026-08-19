@@ -23,7 +23,7 @@ proc stopIcpNetwork*(projectDir: string) =
 proc startIcpNetwork*(projectDir: string) =
   var lastCode = -1
   for attempt in 0..2:
-    lastCode = runIcpCommand(projectDir, "icp network start -d >/dev/null 2>&1")
+    lastCode = runIcpCommand(projectDir, "nicp network >/dev/null 2>&1")
     if lastCode == 0:
       return
     sleep(1000)
