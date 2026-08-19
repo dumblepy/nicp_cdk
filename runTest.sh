@@ -19,6 +19,7 @@ trap cleanup_icp_state EXIT
 
 nimble uninstall nicp_cdk -iy >/dev/null 2>&1 || true
 nimble install -y
+nicp cHeaders
 
 free_icp_gateway_port
 cleanup_icp_state
