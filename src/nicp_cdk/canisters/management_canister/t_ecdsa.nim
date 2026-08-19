@@ -2,7 +2,6 @@ import std/options
 import std/asyncfutures
 import std/asyncdispatch
 import std/tables
-import std/strutils
 import ../../ic0/ic0
 import ../../ic_types/candid_types
 import ../../ic_types/ic_principal
@@ -10,9 +9,11 @@ import ../../ic_types/ic_record
 import ../../ic_types/candid_message/candid_encode
 import ../../ic_types/candid_message/candid_decode
 import ../../ic_types/candid_message/candid_message_types
-import ./estimateGas
 import ./management_canister_type
 import ../../ic_api
+
+when defined(release):
+  import ./estimateGas
 
 
 # ================================================================================
@@ -71,19 +72,22 @@ type
 # Constants
 # ================================================================================
 const
-  # ECDSA: フォールバック推定（サイズベース）の係数
-  # - 動的推定（ic0_cost_sign_with_ecdsa）が使えない環境向けの保守的な概算
-  EcdsaFallbackBaseCycles = 18_000_000_000'u64
-  EcdsaFallbackPerPayloadByteCycles = 30_000_000'u64
+  # 動的コスト API を利用できない開発ビルド用の、公式価格表に基づく最低額。
+  # https://docs.internetcomputer.org/references/cycle-costs/
+  # 署名料金は Candid ペイロードの大きさではなく、鍵を保持するサブネットで決まる。
+  EcdsaTestKeySigningCycles = 10_000_000_000'u64
+  EcdsaProductionKeySigningCycles = 26_153_846_153'u64
 
-proc estimateEcdsaCostFallback(payload: seq[uint8]): uint64 =
-  let payloadSize = payload.len.uint64
-  var cost = EcdsaFallbackBaseCycles
-  cost = addCap(cost, mulCap(payloadSize, EcdsaFallbackPerPayloadByteCycles))
-  let finalCost = addMargin20(cost)
-  devEcho "📊 Estimated ECDSA cost (fallback): ", cost, " cycles + 20% margin = ", finalCost,
-       " (payload size: ", payloadSize, " bytes)"
-  finalCost
+proc estimateEcdsaCostFallback(keyId: EcdsaKeyId): uint64 =
+  ## 開発ビルドでは System API の動的見積りを使えないため、公開済みの鍵別料金を使う。
+  ## 未知の鍵には、本番用 key_1 と同じ保守的な料金を付与する。
+  let cost = if keyId.name == "test_key_1":
+    EcdsaTestKeySigningCycles
+  else:
+    EcdsaProductionKeySigningCycles
+  devEcho "📊 Estimated ECDSA cost (fallback): ", cost,
+       " cycles (key name: ", keyId.name, ")"
+  cost
 
 
 # ================================================================================
@@ -101,16 +105,19 @@ when defined(release):
     except:
       return false
 
-  proc estimateEcdsaCostDynamic(keyId: EcdsaKeyId, payload: seq[uint8]): Option[uint64] =
+  proc estimateEcdsaCostDynamic(keyId: EcdsaKeyId): Option[uint64] =
     ## ic0_cost_sign_with_ecdsa APIを使用した動的なcycle計算
+    ## API の src / size には Candid payload ではなく key_id.name を渡す。
     ## 成功時は計算されたcycle量を返し、失敗時はnoneを返す
     try:
+      if keyId.name.len == 0:
+        return none(uint64)
       let curveValue = uint32(keyId.curve.ord)
       var costBuffer: array[16, uint8]  # 128bit for cycles
       
       let apiResult = ic0_cost_sign_with_ecdsa(
-        ptrToInt(addr payload[0]),       # ペイロードの先頭アドレス
-        payload.len,                     # ペイロードのサイズ
+        ptrToInt(addr keyId.name[0]),    # 鍵名の先頭アドレス
+        keyId.name.len,                  # 鍵名のバイト長
         curveValue,                      # ECDSA曲線タイプ
         ptrToInt(addr costBuffer[0])     # 結果を格納するバッファ
       )
@@ -127,39 +134,31 @@ when defined(release):
         devEcho "⚠️ ic0_cost_sign_with_ecdsa returned 0 cycles"
         return none(uint64)
       
-      # 20%の安全マージンを追加
-      let finalCost = addMargin20(exactCost)
-      devEcho "📊 Estimated ECDSA cost (dynamic): ", exactCost, " cycles + 20% margin = ", finalCost, " cycles"
-      return some(finalCost)
+      devEcho "📊 Estimated ECDSA cost (dynamic): ", exactCost, " cycles"
+      return some(exactCost)
       
-    except Exception as e:
-      devEcho "⚠️ Failed to estimate ECDSA cost dynamically: ", e.msg
+    except Exception:
+      devEcho "⚠️ Failed to estimate ECDSA cost dynamically"
       return none(uint64)
 
-proc estimateEcdsaCost(keyId: EcdsaKeyId, payload: seq[uint8]): uint64 =
+proc estimateEcdsaCost(keyId: EcdsaKeyId): uint64 =
   ## ECDSAのサイクル使用量を計算
   ## keyId: 使用する鍵の情報
-  ## payload: Candidエンコードされた引数データ
-  ## 
-  ## コンパイル時フラグ `-d:enableEcdsaDynamicCost` を指定すると、
-  ## レプリカ環境で動的計算を試行します。
-  ## デフォルトではフォールバック値を使用します（ローカルレプリカで安全）。
+  ## リリースビルドでは、レプリカ環境で System API により現在の料金を取得する。
   
-  # 動的計算の有効化フラグ（デフォルト: 無効）
-  when defined(enableEcdsaDynamicCost) and defined(release):
+  when defined(release):
     # メインネット/テストネット用: 動的計算を試行
     try:
       if isReplicatedExecution():
         devEcho "🔍 Attempting dynamic ECDSA cost estimation..."
-        let dynamicCost = estimateEcdsaCostDynamic(keyId, payload)
+        let dynamicCost = estimateEcdsaCostDynamic(keyId)
         if dynamicCost.isSome:
           return dynamicCost.get
-    except Exception as e:
-      devEcho "⚠️ Dynamic cost estimation failed: ", e.msg
+    except Exception:
+      devEcho "⚠️ Dynamic cost estimation failed"
       # フォールバックへ続行
   
-  # デフォルト: サイズベースのフォールバック推定（ローカルレプリカ対応）
-  return estimateEcdsaCostFallback(payload)
+  return estimateEcdsaCostFallback(keyId)
 
 
 # ================================================================================
@@ -279,11 +278,6 @@ proc publicKey*(_:type ManagementCanister, arg: EcdsaPublicKeyArgs): Future[Ecds
     let candidValue = newCandidRecord(arg)
     let encoded = encodeCandidMessage(@[candidValue])
     
-    # cycle量を計算して追加
-    let requiredCycles = estimateEcdsaCost(arg.key_id, encoded)
-    devEcho "Adding cycles for ECDSA public_key: ", requiredCycles
-    ic0_call_cycles_add128(0, requiredCycles)
-    
     ## 3. Execute call
     ic0_call_data_append(ptrToInt(addr encoded[0]), encoded.len)
     let err = ic0_call_perform()
@@ -322,7 +316,7 @@ proc sign*(_:type ManagementCanister, arg: EcdsaSignArgs): Future[SignWithEcdsaR
     let encoded = encodeCandidMessage(@[candidValue])
     
     # cycle量を計算して追加
-    let requiredCycles = estimateEcdsaCost(arg.key_id, encoded)
+    let requiredCycles = estimateEcdsaCost(arg.key_id)
     devEcho "Adding cycles for ECDSA sign: ", requiredCycles
     ic0_call_cycles_add128(0, requiredCycles)
     

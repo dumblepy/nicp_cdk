@@ -34,6 +34,12 @@ const
   GOOD_TRANSPORT_PUBLIC_KEY_HEX = "a7e75af9dd4d868a41ad2f5a5b021d653e31084261724fb40ae2f1b1c31c778d3b9464502d599cf6720723ec5c68b59d"
 
 
+when isMainModule:
+  if findExe(ICP_PATH).len == 0:
+    echo "Skipping test_vetkey because icp is unavailable in this environment."
+    quit(0)
+
+
 # 統合テスト用: icp CLI のラッパと `icp canister call` 向け Candid 引数の組み立て。
 var
   alicePrincipal = ""
@@ -269,7 +275,7 @@ suite "vetKD Candid tests":
     check record["transport_public_key"].getBlob() == @[9'u8, 10'u8]
 
 
-withRestartedIcpNetwork(VETKEY_DIR):
+withIcpNetwork(VETKEY_DIR):
   # examples/vetkey をデプロイし、identity 付きの canister call でサンプル API の振る舞いを検証する。
   suite "vetKD integration tests":
     test "Prepare identities and deploy vetkey canister":

@@ -4,7 +4,7 @@ name: frontend
 
 recipe:
   # https://github.com/dfinity/icp-cli-recipes/blob/main/recipes/asset-canister/README.md
-  type: "@dfinity/asset-canister@v2.1.0"
+  type: "@dfinity/asset-canister@v2.2.1"
   configuration:
     build:
       - pnpm install
