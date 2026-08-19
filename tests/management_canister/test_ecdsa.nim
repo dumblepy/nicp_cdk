@@ -116,6 +116,7 @@ withIcpNetwork(T_ECDSA_DIR):
       # メッセージに署名
       let testMessage = "\"Hello, ICP ECDSA!\""
       let signResult = callCanisterFunction("signWithEcdsa", testMessage)
+      echo "=== signResult: ", signResult
 
       # 署名が正常に生成されることを確認
       check signResult.contains("\"") and signResult.len > 10
