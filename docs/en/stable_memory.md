@@ -11,7 +11,7 @@ types built on top of stable memory:
 
 - `IcStableValue[T]` for a single value
 - `IcStableSeq[T]` for a sequence of values
-- `IcStableBTreeMap[K, V]` for an ordered key-value store
+- `IcStableTable[K, V]` for an ordered key-value store
 
 All values are serialized with the custom format in
 `src/nicp_cdk/storage/serialization.nim`.
@@ -41,12 +41,12 @@ items.delete(0)
 let length = items.len()
 ```
 
-### IcStableBTreeMap
+### IcStableTable
 
 ```nim
 import nicp_cdk/storage/stable_btree
 
-var table = initIcStableBTreeMap[string, uint64]()
+var table = initIcStableTable[string, uint64]()
 table["alice"] = 100
 if table.hasKey("alice"):
   echo table["alice"]
@@ -82,7 +82,7 @@ Header size: 32 bytes.
 32..   entries: [elemLen u32][elemBytes] ...
 ```
 
-### IcStableBTreeMap layout
+### IcStableTable layout
 
 The B+Tree persists an `SBT2` superblock, node pages, and key/value blobs.
 Initialization reads only the superblock and bounded cache metadata; it does

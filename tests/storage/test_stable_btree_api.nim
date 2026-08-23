@@ -8,7 +8,7 @@ import ../../src/nicp_cdk/storage/stable_btree
 import ../../src/nicp_cdk/storage/memory_view
 
 proc apiShape() =
-  var table = initIcStableBTreeMap[string, uint64]()
+  var table = initIcStableTable[string, uint64]()
   table["one"] = 1
   discard table.hasKey("one")
   discard table["one"]
@@ -21,7 +21,7 @@ proc apiShape() =
     discard key
     discard value
   table.clear()
-  var uncached = initIcStableBTreeMap[uint32, string](cacheSlots = 0)
+  var uncached = initIcStableTable[uint32, string](cacheSlots = 0)
   uncached[1'u32] = "one"
   discard uncached[1'u32]
 

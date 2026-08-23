@@ -195,7 +195,7 @@ seqIntDb.clear()
 
 Supported element types: primitive types and Principal
 
-### IcStableBTreeMap - Persistent Key-Value Store
+### IcStableTable - Persistent Key-Value Store
 
 Store key-value pairs that persist across canister upgrades.
 
@@ -203,7 +203,7 @@ Store key-value pairs that persist across canister upgrades.
 import nicp_cdk/storage/stable_btree
 
 # Create a stable B+Tree mapping strings to integers
-var scoreTable = initIcStableBTreeMap[string, uint]()
+var scoreTable = initIcStableTable[string, uint]()
 
 # Store a key-value pair
 scoreTable["alice"] = 100
@@ -244,7 +244,7 @@ type UserProfile = object
   active: bool
 
 # Create a stable B+Tree mapping principals to user profiles
-var userTable = initIcStableBTreeMap[Principal, UserProfile]()
+var userTable = initIcStableTable[Principal, UserProfile]()
 
 # Store a user profile
 let caller = Msg.caller()

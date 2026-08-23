@@ -43,7 +43,7 @@ proc queryOrder(index, count: uint32): uint32 =
 proc benchmark(count: uint32) =
   let treeMemory = InMemoryStable(data: @[])
   let hashMemory = InMemoryStable(data: @[])
-  var tree = initIcStableBTreeMap[uint32, uint64](treeMemory.memoryView(), cacheSlots = 0)
+  var tree = initIcStableTable[uint32, uint64](treeMemory.memoryView(), cacheSlots = 0)
   var hash = initIcStableHashMap[uint32, uint64](hashMemory.memoryView())
   for key in 0'u32 ..< count:
     let value = uint64(key) xor 0x9e3779b97f4a7c15'u64

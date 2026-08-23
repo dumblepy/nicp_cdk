@@ -38,7 +38,7 @@ proc memoryView(memory: InMemoryStable): StableMemoryView =
 suite "stable B+Tree":
   test "split, ordered iteration, update, and reopen":
     let backing = InMemoryStable(data: @[])
-    var tree = initIcStableBTreeMap[uint32, string](backing.memoryView(), cacheSlots = 0)
+    var tree = initIcStableTable[uint32, string](backing.memoryView(), cacheSlots = 0)
     for index in countdown(100'u32, 1'u32): tree[index] = "value-" & $index
     check tree.len == 100
     for index in 1'u32 .. 100'u32:
@@ -58,14 +58,14 @@ suite "stable B+Tree":
     for key, _ in tree.range(40'u32, 45'u32): ranged.add(key)
     check ranged == @[40'u32, 41'u32, 42'u32, 43'u32, 44'u32]
 
-    var reopened = initIcStableBTreeMap[uint32, string](backing.memoryView())
+    var reopened = initIcStableTable[uint32, string](backing.memoryView())
     check reopened.len == 100
     check reopened[50'u32] == "updated"
     check reopened[100'u32] == "value-100"
 
   test "deterministic random upserts match a heap reference":
     let backing = InMemoryStable(data: @[])
-    var tree = initIcStableBTreeMap[uint32, uint64](backing.memoryView())
+    var tree = initIcStableTable[uint32, uint64](backing.memoryView())
     var reference = initTable[uint32, uint64]()
     var state = 0x9E3779B97F4A7C15'u64
     for _ in 0 ..< 1000:
@@ -88,18 +88,18 @@ suite "stable B+Tree":
   test "custom key codec is persisted and used for ordering":
     let backing = InMemoryStable(data: @[])
     let codec = compositeCodec()
-    var tree = initIcStableBTreeMap[CompositeKey, string](backing.memoryView(), codec)
+    var tree = initIcStableTable[CompositeKey, string](backing.memoryView(), codec)
     tree[CompositeKey(group: 2, id: 1)] = "two-one"
     tree[CompositeKey(group: 1, id: 9)] = "one-nine"
     var keys: seq[CompositeKey] = @[]
     for key, _ in tree.pairs: keys.add(key)
     check keys == @[CompositeKey(group: 1, id: 9), CompositeKey(group: 2, id: 1)]
-    var reopened = initIcStableBTreeMap[CompositeKey, string](backing.memoryView(), codec)
+    var reopened = initIcStableTable[CompositeKey, string](backing.memoryView(), codec)
     check reopened[CompositeKey(group: 2, id: 1)] == "two-one"
 
   test "value codec mismatch is rejected on reopen":
     let backing = InMemoryStable(data: @[])
-    var tree = initIcStableBTreeMap[uint32, string](backing.memoryView(), valueCodecId = 1)
+    var tree = initIcStableTable[uint32, string](backing.memoryView(), valueCodecId = 1)
     tree[1'u32] = "one"
     expect ValueError:
-      discard initIcStableBTreeMap[uint32, string](backing.memoryView(), valueCodecId = 2)
+      discard initIcStableTable[uint32, string](backing.memoryView(), valueCodecId = 2)

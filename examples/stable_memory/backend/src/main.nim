@@ -202,7 +202,7 @@ proc seqInt_values() {.query.} =
   reply(seqIntDb.toSeq())
 
 # ==================================================
-# IcStableBTreeMap[string, string]
+# IcStableTable[string, string] (B+Tree implementation)
 # ==================================================
 # This map keeps its searchable index in stable memory.  The bounded view
 # isolates it from the legacy stable values/tables above, while `range` shows
@@ -211,7 +211,7 @@ type BTreeEntry = object
   key: string
   value: string
 
-var btreeDb = initIcStableBTreeMap[string, string](
+var btreeDb = initIcStableTable[string, string](
   initRawMemoryView(BTreeDbOffset, BTreeDbLimit)
 )
 

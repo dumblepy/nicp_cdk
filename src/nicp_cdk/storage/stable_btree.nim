@@ -43,7 +43,7 @@ type
     id*: uint32
     encode*: proc(key: K): seq[byte] {.closure.}
     decode*: proc(data: openArray[byte]): K {.closure.}
-  IcStableBTreeMap*[K, V] = object
+  IcStableTable*[K, V] = object
     memory: StableMemoryView
     header: BTreeHeader
     nodeSize: uint32
@@ -61,9 +61,9 @@ proc get32(data: openArray[byte], at: int): uint32 =
   littleEndian32(addr result, unsafeAddr data[at])
 proc get64(data: openArray[byte], at: int): uint64 =
   littleEndian64(addr result, unsafeAddr data[at])
-proc capacity(t: IcStableBTreeMap): int = (int(t.nodeSize) - NodeHeaderSize) div SlotSize
+proc capacity(t: IcStableTable): int = (int(t.nodeSize) - NodeHeaderSize) div SlotSize
 
-proc encodeKey[K, V](t: IcStableBTreeMap[K, V], key: K): seq[byte] =
+proc encodeKey[K, V](t: IcStableTable[K, V], key: K): seq[byte] =
   ## Avoid an indirect closure call for built-in codecs. Besides reducing the
   ## hot-path overhead, this keeps the default codec path compatible with the
   ## WASM ABI used by the example canister.
@@ -73,14 +73,14 @@ proc encodeKey[K, V](t: IcStableBTreeMap[K, V], key: K): seq[byte] =
     if t.keyCodecId == stableKeyCodecId(K): return stableKeyEncode(key)
   t.codec.encode(key)
 
-proc decodeKey[K, V](t: IcStableBTreeMap[K, V], data: openArray[byte]): K =
+proc decodeKey[K, V](t: IcStableTable[K, V], data: openArray[byte]): K =
   when K is string:
     return stableKeyDecode[K](data)
   elif K is bool or K is char or K is SomeUnsignedInt or K is SomeSignedInt or K is Principal:
     if t.keyCodecId == stableKeyCodecId(K): return stableKeyDecode[K](data)
   t.codec.decode(data)
 
-proc writeHeader[K, V](t: IcStableBTreeMap[K, V]) =
+proc writeHeader[K, V](t: IcStableTable[K, V]) =
   var b = newSeq[byte](int(SuperblockSize))
   for i in 0 .. 3: b[i] = BTreeMagic[i]
   b.put32(4, uint32(BTreeVersion)); b.put32(8, t.nodeSize)
@@ -90,7 +90,7 @@ proc writeHeader[K, V](t: IcStableBTreeMap[K, V]) =
   b.put64(56, t.header.lastLeaf); b.put64(64, t.header.blobFreeHead); b.put64(72, t.header.arenaEnd)
   t.memory.write(0, b)
 
-proc readHeader[K, V](t: var IcStableBTreeMap[K, V]): bool =
+proc readHeader[K, V](t: var IcStableTable[K, V]): bool =
   if t.memory.size < SuperblockSize: return false
   let b = t.memory.read(0, SuperblockSize)
   for i in 0 .. 3:
@@ -112,7 +112,7 @@ proc readHeader[K, V](t: var IcStableBTreeMap[K, V]): bool =
     raise newException(ValueError, "invalid SBT2 allocator metadata")
   result = true
 
-proc readNode[K, V](t: IcStableBTreeMap[K, V], address: uint64): Node =
+proc readNode[K, V](t: IcStableTable[K, V], address: uint64): Node =
   if not t.cache.isNil and t.cache.entries.len > 0:
     let slot = int((address div uint64(t.nodeSize)) mod uint64(t.cache.entries.len))
     let cached = t.cache.entries[slot]
@@ -133,7 +133,7 @@ proc readNode[K, V](t: IcStableBTreeMap[K, V], address: uint64): Node =
     let slot = int((address div uint64(t.nodeSize)) mod uint64(t.cache.entries.len))
     t.cache.entries[slot] = NodeCacheEntry(address: address, node: result, valid: true)
 
-proc writeNode[K, V](t: IcStableBTreeMap[K, V], address: uint64, node: Node) =
+proc writeNode[K, V](t: IcStableTable[K, V], address: uint64, node: Node) =
   if node.slots.len > t.capacity: raise newException(ValueError, "SBT2 node overflow")
   var b = newSeq[byte](int(t.nodeSize)); b[0] = node.kind; b.put32(4, uint32(node.slots.len))
   b.put64(8, node.prev); b.put64(16, node.next); b.put64(24, node.firstChild)
@@ -145,20 +145,20 @@ proc writeNode[K, V](t: IcStableBTreeMap[K, V], address: uint64, node: Node) =
     let slot = int((address div uint64(t.nodeSize)) mod uint64(t.cache.entries.len))
     t.cache.entries[slot] = NodeCacheEntry(address: address, node: node, valid: true)
 
-proc alloc[K, V](t: var IcStableBTreeMap[K, V], size, alignment: uint64): uint64 =
+proc alloc[K, V](t: var IcStableTable[K, V], size, alignment: uint64): uint64 =
   var a = initStableAllocator(t.header.arenaEnd)
   result = a.allocate(t.memory, size, alignment); t.header.arenaEnd = a.arenaEnd
-proc readBlobHeader[K, V](t: IcStableBTreeMap[K, V], address: uint64): (uint64, uint64) =
+proc readBlobHeader[K, V](t: IcStableTable[K, V], address: uint64): (uint64, uint64) =
   if address < SuperblockSize or address > t.memory.size - 16'u64:
     raise newException(ValueError, "SBT2 blob header out of bounds")
   let data = t.memory.read(address, 16)
   (data.get64(0), data.get64(8)) # payload capacity, next free header
 
-proc writeBlobHeader[K, V](t: IcStableBTreeMap[K, V], address, capacity, next: uint64) =
+proc writeBlobHeader[K, V](t: IcStableTable[K, V], address, capacity, next: uint64) =
   var data = newSeq[byte](16); data.put64(0, capacity); data.put64(8, next)
   t.memory.write(address, data)
 
-proc writeBlob[K, V](t: var IcStableBTreeMap[K, V], data: openArray[byte]): uint64 =
+proc writeBlob[K, V](t: var IcStableTable[K, V], data: openArray[byte]): uint64 =
   ## A first-fit free-list keeps update-heavy tables from becoming append-only.
   var previous = 0'u64
   var current = t.header.blobFreeHead
@@ -178,27 +178,27 @@ proc writeBlob[K, V](t: var IcStableBTreeMap[K, V], data: openArray[byte]): uint
   result = headerAddress + 16'u64
   t.memory.write(result, data)
 
-proc freeBlob[K, V](t: var IcStableBTreeMap[K, V], payloadAddress: uint64) =
+proc freeBlob[K, V](t: var IcStableTable[K, V], payloadAddress: uint64) =
   if payloadAddress < SuperblockSize + 16'u64:
     raise newException(ValueError, "invalid SBT2 blob address")
   let headerAddress = payloadAddress - 16'u64
   let (capacity, _) = t.readBlobHeader(headerAddress)
   t.writeBlobHeader(headerAddress, capacity, t.header.blobFreeHead)
   t.header.blobFreeHead = headerAddress
-proc readKey[K, V](t: IcStableBTreeMap[K, V], s: Slot): seq[byte] =
+proc readKey[K, V](t: IcStableTable[K, V], s: Slot): seq[byte] =
   if s.keyOff > t.memory.size or uint64(s.keyLen) > t.memory.size - s.keyOff: raise newException(ValueError, "SBT2 key blob out of bounds")
   t.memory.read(s.keyOff, uint64(s.keyLen))
 proc bytesCompare(a, b: openArray[byte]): int =
   for i in 0 ..< min(a.len, b.len):
     if a[i] != b[i]: return (if a[i] < b[i]: -1 else: 1)
   system.cmp(a.len, b.len)
-proc lower[K, V](t: IcStableBTreeMap[K, V], n: Node, key: openArray[byte]): int =
+proc lower[K, V](t: IcStableTable[K, V], n: Node, key: openArray[byte]): int =
   var lo = 0; var hi = n.slots.len
   while lo < hi:
     let mid = (lo + hi) div 2
     if bytesCompare(t.readKey(n.slots[mid]), key) < 0: lo = mid + 1 else: hi = mid
   lo
-proc childIndex[K, V](t: IcStableBTreeMap[K, V], n: Node, key: openArray[byte]): int =
+proc childIndex[K, V](t: IcStableTable[K, V], n: Node, key: openArray[byte]): int =
   ## Internal separators are the first key of their right child, so equality
   ## must select that right child (upper-bound semantics).
   var lo = 0; var hi = n.slots.len
@@ -206,11 +206,11 @@ proc childIndex[K, V](t: IcStableBTreeMap[K, V], n: Node, key: openArray[byte]):
     let mid = (lo + hi) div 2
     if bytesCompare(t.readKey(n.slots[mid]), key) <= 0: lo = mid + 1 else: hi = mid
   lo
-proc newNode[K, V](t: var IcStableBTreeMap[K, V], kind: uint8): uint64 =
+proc newNode[K, V](t: var IcStableTable[K, V], kind: uint8): uint64 =
   result = t.alloc(uint64(t.nodeSize), uint64(t.nodeSize)); t.writeNode(result, Node(kind: kind))
 
-proc initIcStableBTreeMap*[K, V](memory: StableMemoryView, codec: StableKeyCodec[K], cacheSlots: int = 16,
-                                  valueCodecId: uint32 = 0): IcStableBTreeMap[K, V] =
+proc initIcStableTable*[K, V](memory: StableMemoryView, codec: StableKeyCodec[K], cacheSlots: int = 16,
+                              valueCodecId: uint32 = 0): IcStableTable[K, V] =
   if cacheSlots < 0: raise newException(ValueError, "cacheSlots must not be negative")
   if codec.id == 0 or codec.encode.isNil or codec.decode.isNil: raise newException(ValueError, "invalid StableKeyCodec")
   result.memory = memory; result.nodeSize = DefaultNodeSize; result.keyCodecId = codec.id; result.valueCodecId = valueCodecId; result.codec = codec
@@ -223,16 +223,16 @@ proc initIcStableBTreeMap*[K, V](memory: StableMemoryView, codec: StableKeyCodec
     new(result.cache)
     result.cache.entries = newSeq[NodeCacheEntry](cacheSlots)
 
-proc initIcStableBTreeMap*[K, V](memory: StableMemoryView = initRawMemoryView(), cacheSlots: int = 16,
-                                  valueCodecId: uint32 = 0): IcStableBTreeMap[K, V] =
+proc initIcStableTable*[K, V](memory: StableMemoryView = initRawMemoryView(), cacheSlots: int = 16,
+                              valueCodecId: uint32 = 0): IcStableTable[K, V] =
   let codec = StableKeyCodec[K](id: stableKeyCodecId(K),
     encode: proc(key: K): seq[byte] = stableKeyEncode(key),
     decode: proc(data: openArray[byte]): K = stableKeyDecode[K](data))
-  result = initIcStableBTreeMap[K, V](memory, codec, cacheSlots, valueCodecId)
+  result = initIcStableTable[K, V](memory, codec, cacheSlots, valueCodecId)
   result.builtinCodec = true
 
-proc len*[K, V](t: IcStableBTreeMap[K, V]): int = int(t.header.count)
-proc hasKey*[K, V](t: IcStableBTreeMap[K, V], key: K): bool {.noinline.} =
+proc len*[K, V](t: IcStableTable[K, V]): int = int(t.header.count)
+proc hasKey*[K, V](t: IcStableTable[K, V], key: K): bool {.noinline.} =
   let q = t.encodeKey(key); var nodeAddr = t.header.rootAddr
   while nodeAddr != 0:
     let n = t.readNode(nodeAddr)
@@ -243,7 +243,7 @@ proc hasKey*[K, V](t: IcStableBTreeMap[K, V], key: K): bool {.noinline.} =
     nodeAddr = if i == 0: n.firstChild else: n.slots[i - 1].child
   false
 
-proc `[]`*[K, V](t: IcStableBTreeMap[K, V], key: K): V {.noinline.} =
+proc `[]`*[K, V](t: IcStableTable[K, V], key: K): V {.noinline.} =
   let q = t.encodeKey(key); var nodeAddr = t.header.rootAddr
   while nodeAddr != 0:
     let n = t.readNode(nodeAddr)
@@ -255,7 +255,7 @@ proc `[]`*[K, V](t: IcStableBTreeMap[K, V], key: K): V {.noinline.} =
     nodeAddr = if i == 0: n.firstChild else: n.slots[i - 1].child
   raise newException(KeyError, "key not found")
 
-proc lowerBound*[K, V](t: IcStableBTreeMap[K, V], key: K): Option[(K, V)] =
+proc lowerBound*[K, V](t: IcStableTable[K, V], key: K): Option[(K, V)] =
   ## Returns the first entry whose key is not smaller than `key`.
   let query = t.encodeKey(key)
   var nodeAddr = t.header.rootAddr
@@ -278,7 +278,7 @@ proc lowerBound*[K, V](t: IcStableBTreeMap[K, V], key: K): Option[(K, V)] =
     nodeAddr = if index == 0: node.firstChild else: node.slots[index - 1].child
   none((K, V))
 
-proc insertIntoParent[K, V](t: var IcStableBTreeMap[K, V], path: seq[uint64], childIndexes: seq[int],
+proc insertIntoParent[K, V](t: var IcStableTable[K, V], path: seq[uint64], childIndexes: seq[int],
                             separator: Slot, rightAddr: uint64) =
   var sep = separator; var right = rightAddr
   for level in countdown(path.high, 0):
@@ -301,7 +301,7 @@ proc insertIntoParent[K, V](t: var IcStableBTreeMap[K, V], path: seq[uint64], ch
   var rootNode = n; rootNode.slots[0].child = right
   t.writeNode(root, rootNode); t.header.rootAddr = root; inc t.header.height
 
-proc `[]=`*[K, V](t: var IcStableBTreeMap[K, V], key: K, value: V) {.noinline.} =
+proc `[]=`*[K, V](t: var IcStableTable[K, V], key: K, value: V) {.noinline.} =
   let keyBytes = t.encodeKey(key)
   let valueBytes = serialize(value)
   if t.header.rootAddr == 0:
@@ -352,7 +352,7 @@ proc `[]=`*[K, V](t: var IcStableBTreeMap[K, V], key: K, value: V) {.noinline.} 
         t.insertIntoParent(path, childIndexes, separator, rightAddr)
       t.writeHeader
 
-iterator pairs*[K, V](t: IcStableBTreeMap[K, V]): (K, V) =
+iterator pairs*[K, V](t: IcStableTable[K, V]): (K, V) =
   var nodeAddr = t.header.firstLeaf
   while nodeAddr != 0:
     let leaf = t.readNode(nodeAddr)
@@ -362,12 +362,12 @@ iterator pairs*[K, V](t: IcStableBTreeMap[K, V]): (K, V) =
       yield (key, deserialize[V](data, p))
     nodeAddr = leaf.next
 
-iterator keys*[K, V](t: IcStableBTreeMap[K, V]): K =
+iterator keys*[K, V](t: IcStableTable[K, V]): K =
   for key, _ in t.pairs: yield key
-iterator values*[K, V](t: IcStableBTreeMap[K, V]): V =
+iterator values*[K, V](t: IcStableTable[K, V]): V =
   for _, value in t.pairs: yield value
 
-iterator range*[K, V](t: IcStableBTreeMap[K, V], startKey, endKey: K): (K, V) =
+iterator range*[K, V](t: IcStableTable[K, V], startKey, endKey: K): (K, V) =
   ## Iterates `[startKey, endKey)` in stable-key order.
   let start = t.encodeKey(startKey)
   let finish = t.encodeKey(endKey)
@@ -392,7 +392,7 @@ iterator range*[K, V](t: IcStableBTreeMap[K, V], startKey, endKey: K): (K, V) =
         let index = t.childIndex(node, start)
         nodeAddr = if index == 0: node.firstChild else: node.slots[index - 1].child
 
-proc clear*[K, V](t: var IcStableBTreeMap[K, V]) =
+proc clear*[K, V](t: var IcStableTable[K, V]) =
   ## Stable memory cannot shrink; resetting the arena makes this view reusable.
   ## Reset the node geometry too: a cleared view must never retain a legacy
   ## non-page-aligned node size from an interrupted/older deployment.

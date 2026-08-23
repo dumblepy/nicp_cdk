@@ -166,7 +166,7 @@ suite "stable memory backend tests":
     check values.contains("25")
     check values.contains("30")
 
-  test "IcStableBTreeMap[string, string]":
+  test "IcStableTable[string, string]":
     discard callCanisterFunction("btree_reset")
     check callCanisterFunction("btree_len") == "(0 : nat)"
     check callCanisterFunction("btree_hasKey", "(\"one\")") == "(false)"

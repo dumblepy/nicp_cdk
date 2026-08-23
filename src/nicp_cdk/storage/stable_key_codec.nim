@@ -1,4 +1,4 @@
-## Ordered, versioned encodings for keys used by IcStableBTreeMap.
+## Ordered, versioned encodings for keys used by IcStableTable.
 
 import ../ic_types/ic_principal
 
@@ -52,7 +52,7 @@ proc stableKeyCodecId*[T](_: typedesc[T]): uint32 =
   elif T is SomeUnsignedInt: UintKeyCodecId + uint32(sizeof(T))
   elif T is SomeSignedInt: IntKeyCodecId + uint32(sizeof(T))
   elif T is char: UintKeyCodecId + 1'u32
-  else: {.error: "IcStableBTreeMap keys require a StableKeyCodec-supported type".}
+  else: {.error: "IcStableTable keys require a StableKeyCodec-supported type".}
 
 proc stableKeyDecode*[T](data: openArray[byte]): T =
   when T is string:
@@ -95,4 +95,4 @@ proc stableKeyDecode*[T](data: openArray[byte]): T =
     else: result = uint(stableKeyDecode[uint32](data))
   elif T is Principal:
     result = Principal.fromBlob(@data)
-  else: {.error: "IcStableBTreeMap keys require a StableKeyCodec-supported type".}
+  else: {.error: "IcStableTable keys require a StableKeyCodec-supported type".}

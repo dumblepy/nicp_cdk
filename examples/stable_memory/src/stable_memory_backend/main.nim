@@ -202,13 +202,13 @@ proc seqInt_values() {.query.} =
   reply(seqIntDb.toSeq())
 
 # ==================================================
-# IcStableBTreeMap[string, string]
+# IcStableTable[string, string] (B+Tree implementation)
 # ==================================================
 type BTreeEntry = object
   key: string
   value: string
 
-var btreeDb = initIcStableBTreeMap[string, string](
+var btreeDb = initIcStableTable[string, string](
   initRawMemoryView(BTreeDbOffset, BTreeDbLimit)
 )
 
