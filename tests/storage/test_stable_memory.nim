@@ -86,6 +86,7 @@ proc resetAllDatabases() =
   discard callCanisterFunction("byte_set", "(0)")
   discard callCanisterFunction("seqInt_reset")
   discard callCanisterFunction("table_reset")
+  discard callCanisterFunction("btree_reset")
 
 suite "stable memory backend tests":
   deploy()
@@ -197,6 +198,29 @@ suite "stable memory backend tests":
     let values = callCanisterFunction("table_values")
     check values.contains("\"root2\"")
     check values.contains("\"anon\"")
+
+  test "IcStableBTreeMap[string, string]":
+    discard callCanisterFunction("btree_reset")
+    check callCanisterFunction("btree_len") == "(0 : nat)"
+    check callCanisterFunction("btree_hasKey", "(\"one\")") == "(false)"
+
+    discard callCanisterFunction("btree_set", "(\"two\", \"second\")")
+    discard callCanisterFunction("btree_set", "(\"one\", \"first\")")
+    check callCanisterFunction("btree_len") == "(2 : nat)"
+    check callCanisterFunction("btree_get", "(\"one\")") == "(\"first\")"
+
+    ## Updating an existing key must not change the live-entry count.
+    discard callCanisterFunction("btree_set", "(\"one\", \"updated\")")
+    check callCanisterFunction("btree_len") == "(2 : nat)"
+    check callCanisterFunction("btree_get", "(\"one\")") == "(\"updated\")"
+    check callCanisterFunction("btree_hasKey", "(\"two\")") == "(true)"
+
+    let ranged = callCanisterFunction("btree_range", "(\"a\", \"z\")")
+    check ranged.contains("key = \"one\"")
+    check ranged.contains("value = \"updated\"")
+    check ranged.contains("key = \"two\"")
+    check ranged.contains("value = \"second\"")
+    check ranged.find("key = \"one\"") < ranged.find("key = \"two\"")
 
   test "object":
     discard callCanisterFunction("object_set", "(1, \"Alice\", true)")
