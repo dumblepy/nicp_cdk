@@ -1,0 +1,641 @@
+# NICP Stable Memory Native Indexed Storage 設計書
+
+**対象: github.com/dumblepy/nicp_cdk**
+
+Draft 0.1 \| 2026-08-20
+
+| **設計結論** 第一実装は stable memory native の B+Tree とする。起動時はヘッダー・allocator メタデータのみを読み、全件走査や heap index 再構築を行わない。Hash index は exact-match 特化の第二実装とし、全件 rehash を避けるため linear hashing 等の incremental growth を採用する。 |
+|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
+| **項目**          | **決定**                                                         |
+|-------------------|------------------------------------------------------------------|
+| 主データ構造      | IcStableBTreeMap\[K,V\]（B+Tree）                                |
+| 既存 API          | IcStableTable\[K,V\] を wrapper/alias として互換維持             |
+| 起動コスト        | O(1): header + allocator metadata + bounded cache initialization |
+| heap 使用量       | O(cache + current result), データ件数に非依存                    |
+| 検索              | stable memory 上の node を逐次 read。O(log_B n)                  |
+| range / iteration | linked leaf を順次走査。全件 heap 化なし                         |
+| key ordering      | 既存 serialize() と分離した order-preserving StableKeyCodec      |
+| 複数ストレージ    | MemoryView 抽象化。将来 VirtualMemory/MemoryManager を標準化     |
+| Hash              | Phase 5。deterministic/versioned hash + incremental bucket split |
+
+# 1. 目的・スコープ
+
+## 進捗
+
+- [x] Phase 1: `StableMemoryView`、永続 SBT2 superblock、順序保存 `StableKeyCodec`、固定ページ allocator の基盤を追加。
+- [x] Phase 2（MVP）: stable memory 上の node/blob を直接辿る B+Tree の get/hasKey/insert/update/leaf・internal split/pairs を追加。
+- [x] Phase 2: value blob の persistent free-list allocator、bounded direct-mapped node cache、in-memory backend を用いる split/property/reopen test を追加。
+- [x] Phase 3: `lowerBound`、`range`、SBT2 を既定とする `IcStableTable` facade、bounded RawMemoryView の example を追加。`examples/stable_memory/backend` に `IcStableBTreeMap` の set/get/range scenario を追加。
+- [x] Phase 4（MVP）: STBL v1 の永続カーソル付き `migrateStep` を追加。
+- [x] Phase 4: in-memory `MemoryView` backend により duplicate history・中断/再開 migration test を追加。
+- [x] Phase 4.5（MVP）: persistent bucket chain の `MemoryManager` / `VirtualMemory` を追加。
+- [x] Phase 1: persisted codec ID を検証する明示的な custom `StableKeyCodec` 拡張点を追加。
+- [x] Phase 5（基盤）: versioned SipHash-2-4 と persisted linear-hashing state transition を追加し、reference vector と split routing をテストした。
+- [x] Phase 5: `IcStableHashMap` の persistent bucket/overflow-chain 実装を追加。線形分割は1バケットだけを再配置し、全件 rehash を行わない。
+- [x] Phase 5: exact-match workload benchmark を `benchmarks/storage/stable_exact_lookup.nim` に追加。in-memory backend・cacheSlots=0 の結果では、1k entries は HashMap が優位（1 ms / 1.20 MB vs 4 ms / 3.12 MB）だが、10k entries は B+Tree が優位（54 ms / 41.62 MB vs 63 ms / 57.60 MB）だった。順序 API と大規模時の read byte を考慮し、`IcStableTable` の既定は B+Tree のままとする。
+
+本設計の目的は、NICP の stable memory 上に「検索可能な index 自体」を永続化し、canister 起動・アップグレード後に全件を heap へ復元しなくても利用できる key-value storage を実装することである。対象は主に現行 IcStableTable の置き換えであり、既存の Nim らしい API は可能な限り維持する。
+
+## 1.1 機能要件
+
+- stable memory 上の index node/bucket を直接検索できること。
+
+- 初期化時に全 key/value または全 key index を heap に読み込まないこと。
+
+- canister upgrade 後の初期化コストが保存件数ではなく固定メタデータ量に依存すること。
+
+- get / hasKey / set / len / clear / pairs / keys / values の既存 IcStableTable 相当 API を提供すること。
+
+- 可変長 key/value を扱えること。value は既存 serialization を再利用可能とすること。
+
+- 永続フォーマットを versioning し、互換性のない変更を検出できること。
+
+- stable memory は shrink できない前提で、削除・更新で生じた空き領域を内部 allocator で再利用できること。
+
+## 1.2 非機能要件
+
+- heap footprint はデータ件数 O(n) ではなく bounded cache O(1) とする。
+
+- stable read/write の回数と bytes を計測可能にする。
+
+- trap 時の IC message atomicity を利用し、通常操作のための WAL を必須にしない。
+
+- 既存 STBL v1 からの移行を、instruction limit を避ける stepwise migration として設計する。
+
+- 将来の VirtualMemory、secondary index、certified index へ拡張可能な層構造とする。
+
+## 1.3 非目標（初版）
+
+- SQL/query planner、複合 secondary index、MVCC を初版に含めない。
+
+- float を B+Tree key として初版から一般サポートしない（NaN/total-order を明示設計するまでは除外）。
+
+- 既存の全 stable storage を一度に置換しない。IcStableValue/IcStableSeq は独立して維持可能。
+
+# 2. 現行 NICP 実装の分析
+
+## 2.1 IcStableTable v1 の実体
+
+現行 src/nicp_cdk/storage/stable_table.nim は、stable memory に append-only record log を保存し、heap 上の std/tables.Table\[string, EntryInfo\] を index として利用する。header は 32 bytes で、record は \[keyLen\]\[valueLen\]\[keyBytes\]\[valueBytes\] の連続形式である。
+
+stable memory:  
+STBL header (32 B)  
+record 0: \[klen\]\[vlen\]\[key\]\[value\]  
+record 1: \[klen\]\[vlen\]\[key\]\[value\]  
+...  
+  
+heap:  
+Table\[string, EntryInfo\] \# serialized key -\> stable offset
+
+initIcStableTable() は readHeader() 後に常に rebuildIndex() を呼び、dataStart から dataEnd まで全 record を走査する。key は bytesToString() で heap string にコピーされ、同一 key の新しい record が古い EntryInfo を上書きする。したがって初期化コストは「live key 数」だけでなく更新履歴を含む historical record 数に比例する。
+
+| **観点**    | **現行 v1**                               | **問題**                                            |
+|-------------|-------------------------------------------|-----------------------------------------------------|
+| 初期化      | 全 record scan + heap Table rebuild       | O(history), upgrade/restart 後の命令数が増加        |
+| heap        | 全 unique key bytes + hash table metadata | O(n) heap。大規模化で不利                           |
+| lookup      | heap hash -\> stable value read           | 起動後は速いが index が非永続                       |
+| update      | 常に末尾 append                           | 古い record が残り stable space が増える            |
+| iteration   | heap index を列挙                         | 全 key が heap にあることが前提                     |
+| multi-store | baseOffset を手動指定                     | 成長上限を隔離しないため overlap を防ぐ仕組みがない |
+
+## 2.2 stable_memory.nim の利用上の注意
+
+stable_memory.nim は stable64_size/grow/read/write を薄く wrap している。stableRead() は毎回 newSeq\[byte\] を作る一方、stableReadInto() は caller が用意した buffer に直接読む。B+Tree hot path では後者を優先し、node cache と固定サイズ buffer を併用して一時 heap allocation を抑える。
+
+## 2.3 serialization.nim と key ordering の不一致
+
+現行 serialize() は storage encoding として little-endian を使い、string/Principal には 4-byte length prefix を付ける。この byte sequence は B-tree の sort key として一般には利用できない。例えば uint16 の 255 は FF 00、256 は 00 01 となるため byte lexicographic order は数値順と逆転する。string も length prefix が内容より先に比較される。
+
+| **設計上の分離** ValueCodec（保存・復元）と StableKeyCodec（全順序を保つ検索キー）を別インターフェースにする。既存 serialize() は value には再利用できるが、B+Tree key comparator の仕様にはしない。 |
+|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
+# 3. 既存実装の調査
+
+## 3.1 Rust: DFINITY ic-stable-structures
+
+ICP 公式 Rust ドキュメントは stable structures を「heap を迂回して stable memory を直接 read/write する構造」と位置付け、large state で pre_upgrade/post_upgrade serialization を不要にする方式として推奨している。ic-stable-structures 0.7 系の StableBTreeMap は persistent header に root address と length を持ち、allocator と B-tree node も stable memory に置く。
+
+source の BTreeMap::init/load は全 node を復元せず、header と allocator metadata を読み込む。node は address で必要時に load される。現在の実装は direct-mapped node cache を持ち、default 16 slots、0 で無効化できる。V2 node は key/value の lazy load も行う。
+
+| **要素**      | **Rust stable-structures の方式**                  | **NICP への示唆**                      |
+|---------------|----------------------------------------------------|----------------------------------------|
+| Header        | magic/version/root/length + reserved               | 起動時 O(1) metadata load              |
+| Allocator     | persistent free-list chunk allocator               | free list 自体を stable memory に置く  |
+| Node access   | address 指定で stable read、必要時のみ deserialize | 全 tree を heap 化しない               |
+| Node cache    | bounded direct-mapped cache                        | 16 slots 程度から benchmark            |
+| MemoryManager | 最大 255 virtual memory、bucket 単位で成長         | baseOffset 手動管理を抽象化            |
+| Format        | layout version + reserved bytes                    | 永続 schema を frozen/versioned にする |
+
+## 3.2 Rust: ic-stable-memory SHashMap
+
+community crate ic-stable-memory の SHashMap は stable memory 上の open addressing / linear probing hash table である。hash は upgrade 間で deterministic にするため固定アルゴリズムを使い、occupancy byte + fixed-size K/V slot を stable block に保存する。heap 側には table pointer、len、capacity 等の小さな metadata だけを持つ。
+
+一方、load factor 約 75% で容量を広げる際に新 table を確保し、既存 key を全件 rehash する。この「一回の resize が O(n)」という性質は、IC の instruction budget と相性が悪い。また K/V が fixed-size 前提であり、NICP の string/Principal/object value には pointer/blob allocator を追加する必要がある。
+
+## 3.3 Motoko: 公式 persistence と direct stable-memory structure の区別
+
+現行 Motoko は enhanced orthogonal persistence が default で、Wasm main memory（stable heap）を upgrade 後も保持し、heap size に依存しない upgrade を実現する。したがって Motoko の StableHashMap/StableRBTree という名称は Rust の stable structures と同義ではなく、公式ドキュメントも「stable type であり direct stable-memory structure ではない」と明記している。
+
+ただし Motoko でも raw stable memory / Region は利用できる。Region は explicit layout が必要で access cost もあるため、公式には enhanced orthogonal persistence が合わない場合に限定して使うことを勧めている。NICP は Nim/C/Wasm のため Motoko の heap retention をそのまま利用できず、Rust 型の explicit stable structure が本設計の直接的な比較対象になる。
+
+## 3.4 Motoko community: NatLabs MemoryBTree
+
+NatLabs/memory-collection の MemoryBTree は、branch node、leaf node、serialized key、value の全てを stable memory に置く B+Tree である。branch/leaves/key/value を 4 つの MemoryRegion に分け、leaf を linked list 化し、key comparator は serialized Blob を直接比較できるように設計されている。repository は現在 archived だが、layout と比較戦略は NICP に有用な prior art である。
+
+| **比較軸**       | **DFINITY BTreeMap**        | **NatLabs MemoryBTree**    | **NICP 提案**                    |
+|------------------|-----------------------------|----------------------------|----------------------------------|
+| tree             | B-tree                      | B+Tree                     | B+Tree                           |
+| values           | node 内 lazy value/overflow | value region 分離          | value blob 分離                  |
+| iteration        | tree iterator               | linked leaf                | linked leaf                      |
+| key compare      | Storable + Ord              | serialized Blob comparator | StableKeyCodec / encoded compare |
+| cache            | bounded node cache          | stable memory + cache可能  | bounded cache 0/1/16/32          |
+| memory isolation | MemoryManager               | MemoryRegion               | MemoryView → VirtualMemory       |
+
+# 4. Architecture Decision: B+Tree を第一実装にする
+
+| **評価**           | **B+Tree**         | **Open-address Hash** | **Linear Hashing**    |
+|--------------------|--------------------|-----------------------|-----------------------|
+| exact lookup       | O(log_B n)         | 平均 O(1)             | 平均 O(1)             |
+| range/order        | 強い               | 不可                  | 不可                  |
+| iteration          | leaf sequential    | bucket scan           | bucket scan           |
+| growth spike       | node split のみ    | full rehash O(n)      | 1 bucket split に分散 |
+| variable key/value | pointer 化で自然   | slot + pointer 必要   | bucket + pointer 必要 |
+| collision attack   | なし               | hash 依存             | hash 依存             |
+| 実装参考           | 公式 Rust + Motoko | Rust community        | 自前設計が中心        |
+| 初版適性           | 高                 | 中〜低                | 中                    |
+
+IcStableTable の既存 API は exact lookup だけでなく pairs/keys/values を持つ。B+Tree はこれらを自然に実装でき、将来 range/lowerBound を追加できる。さらに node split は局所操作で、hash table resize のような全件 rehash がない。したがって初版は DFINITY 型の B-tree そのものではなく、data を leaf に集約し leaf 同士を link した B+Tree を採用する。本文では B-tree と B+Tree を区別して記述する。
+
+| **ADR-001** 主実装は B+Tree（内部 node は separator、data は leaf にのみ保持）とする。DFINITY の B-tree より iteration/range を単純化し、NatLabs の「node と key/value blob 分離」を取り入れる。Hash は別型 IcStableHashMap として後置する。 |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
+# 5. 提案アーキテクチャ
+
+## 5.1 レイヤ構成
+
+Application / canister code  
+\|  
+v  
+IcStableTable\[K,V\] (compatibility wrapper)  
+\|  
+v  
+IcStableBTreeMap\[K,V\] (search/insert/split/iteration)  
+\| \| \|  
+\| \| +-- NodeCache (bounded heap)  
+\| +------------- StableKeyCodec\[K\] / ValueCodec\[V\]  
++------------------------ NodeStore / BlobStore / StableAllocator  
+\|  
+v  
+StableMemoryView  
+/ \\  
+RawMemoryView VirtualMemory (future/default)  
+\|  
+v  
+ic0_stable64\_\* / stable memory
+
+## 5.2 各コンポーネント
+
+| **コンポーネント**  | **責務**                                                                            | **heap 常駐**         |
+|---------------------|-------------------------------------------------------------------------------------|-----------------------|
+| StableMemoryView    | size/grow/read/write の論理 address space。base offset/limit/virtual mapping を隠蔽 | 小さな handle         |
+| StableAllocator     | fixed node page と variable blob の allocate/free。free list/bin head を永続化      | header metadata のみ  |
+| StableKeyCodec\[K\] | 検索順を保つ encode/compare、codec ID/version                                       | query key buffer のみ |
+| NodeStore           | node header/slot の decode/encode、stable read/write                                | current node buffer   |
+| NodeCache           | hot node の bounded cache                                                           | 設定 slot 数のみ      |
+| IcStableBTreeMap    | root/height/count、探索・split・iterator                                            | header + cache        |
+| IcStableTable       | 既存 API の facade                                                                  | ほぼなし              |
+
+## 5.3 起動シーケンス
+
+1\. StableMemoryView を open する。
+
+2\. B+Tree header の magic/version/nodeSize/codecId を読む。
+
+3\. allocator header（node free head、blob free bins、arena end）を読む。
+
+4\. root address、height、count、firstLeaf/lastLeaf を heap の小さな struct に保持する。
+
+5\. NodeCache を指定 slot 数だけ初期化する。root を先読みする場合でも 1 node のみ。
+
+6\. record scan は一切行わない。
+
+| **目標** init は保存件数 0 / 1,000 / 1,000,000 で stable read bytes と heap allocation がほぼ同じになることを acceptance test にする。 |
+|----------------------------------------------------------------------------------------------------------------------------------------|
+
+# 6. 永続メモリレイアウト案
+
+## 6.1 B+Tree Superblock
+
+初版は 256 bytes を予約する。field を packed little-endian で固定し、未使用領域を zero/reserved とする。header 自体は sort order に関係しないため little-endian でよい。
+
+| **Offset** | **Size** | **Field**                                    | **説明**                      |
+|------------|----------|----------------------------------------------|-------------------------------|
+| 0          | 4        | magic = "SBT2"                               | type 識別                     |
+| 4          | 2        | layoutVersion                                | node/header layout version    |
+| 6          | 2        | flags                                        | feature flags                 |
+| 8          | 4        | nodeSize                                     | 1024 default; persisted       |
+| 12         | 4        | keyCodecId                                   | 順序 encoding の互換性 ID     |
+| 16         | 4        | valueCodecId                                 | value serialization schema ID |
+| 20         | 4        | reserved                                     | alignment/future              |
+| 24         | 8        | count                                        | live entries                  |
+| 32         | 8        | rootAddr                                     | 0 = empty                     |
+| 40         | 4        | height                                       | root leaf = 1                 |
+| 44         | 4        | reserved                                     | alignment                     |
+| 48         | 8        | firstLeaf                                    | iteration start               |
+| 56         | 8        | lastLeaf                                     | reverse/future                |
+| 64         | 8        | nodeFreeHead                                 | fixed-page allocator          |
+| 72         | 8        | nodeArenaEnd                                 | next node allocation          |
+| 80         | 8        | keyArenaEnd                                  | key blob allocator            |
+| 88         | 8        | valueArenaEnd                                | value blob allocator          |
+| 96         | ...      | free bins / generation / checksum / reserved | future compatibility          |
+
+## 6.2 Node page
+
+nodeSize は 1024 bytes を default とし、1 KiB / 2 KiB / 4 KiB を benchmark して最終決定する。node header と slot array は固定長にする。variable key/value bytes は node page へ埋め込まず別 arena に置くことで split/merge のコピー量を抑える。
+
+| **Node type** | **Header**                                | **Slot（例）**                                                       | **特徴**                                      |
+|---------------|-------------------------------------------|----------------------------------------------------------------------|-----------------------------------------------|
+| Internal      | type,keyCount,parent,leftChild,generation | keyOff:u64, keyLen:u32, flags:u32, rightChild:u64 (24 B)             | separator key + child pointer                 |
+| Leaf          | type,keyCount,parent,prev,next,generation | keyOff:u64,keyLen:u32,valueOff:u64,valueLen:u32,keyPrefix:u64 (32 B) | linked leaf、8-byte prefix は比較 accelerator |
+
+1 KiB node の場合、48〜64 B header を除けば leaf は約 30 slots、internal は約 40 slots を保持できる。実 occupancy を 50〜75% としても fanout は十分大きく、百万件級で tree height は概ね数段に収まる。最終値は benchmark で決め、nodeSize は header に永続化して deployment 後に無断変更しない。
+
+## 6.3 Key / Value blob block
+
+BlobBlockHeader (16 bytes example)  
+blockSize : u32 \# header included / aligned  
+payloadSize : u32  
+flags : u32 \# allocated/free/type  
+classId : u16  
+reserved : u16  
+\[payload bytes ...\]  
+  
+free block when released:  
+payload head can store nextFree:u64
+
+variable-size allocator は segregated free-list（size class）を推奨する。例えば 32,64,128,... bytes の bin head を superblock/allocator header に永続化し、更新時に旧 value block を free して再利用する。巨大 block は dedicated list とする。初版の実装量を抑える場合でも「append-only blob を永続仕様に固定」せず allocator interface を先に切り、後から回収方式を差し替えられるようにする。
+
+## 6.4 MemoryView と VirtualMemory
+
+現行 baseOffset は「開始位置」を指定するだけで、構造 A が成長して構造 B の baseOffset に到達することを防がない。B+Tree 自体は StableMemoryView の論理 address だけを見るようにし、backend を切り替えられるようにする。
+
+| **Mode**                   | **用途**                            | **制約**                                                         |
+|----------------------------|-------------------------------------|------------------------------------------------------------------|
+| RawMemoryView(base, limit) | 既存 API 互換・テスト・単一専用領域 | limit 必須を推奨。複数構造の手動 layout は上級者向け             |
+| VirtualMemory(memoryId)    | 一般利用の default 目標             | bucket/page mapping を manager が管理し、各 structure は独立成長 |
+
+Rust MemoryManager は first page に manager state を置き、virtual memory を bucket list として表現する。NICP も同型の bucket mapping を実装できるが、既存 STBL が offset 0 を利用している canister では manager header を 0 に新設できない。このため managerBase を指定可能にするか、migration 専用 transitional version で安全な位置を確定してから導入する。
+
+# 7. StableKeyCodec 設計
+
+## 7.1 原則
+
+- 同一 codec ID では、encode(a) の byte lexicographic order と論理比較 a \< b が一致すること。
+
+- codec ID/version は superblock に保存し、open 時に compiled codec と一致しなければ error にする。
+
+- value serialization の version と key ordering version を分離する。
+
+- custom object key は暗黙の fieldPairs serialization に頼らず、明示 codec を要求する。
+
+## 7.2 Built-in key codec 案
+
+| **型**         | **ordered encoding**                                                 | **備考**                                     |
+|----------------|----------------------------------------------------------------------|----------------------------------------------|
+| uint8/16/32/64 | fixed width big-endian                                               | byte lex = numeric order                     |
+| int8/16/32/64  | two’s complement bit pattern の sign bit を flip → big-endian        | negative \< positive を維持                  |
+| bool           | 00 / 01                                                              | false \< true                                |
+| char           | code unit を unsigned ordered encoding                               | Nim char の定義範囲を固定                    |
+| string         | length prefix を比較キーから除外し UTF-8/raw bytes lex               | storage block length は slot metadata に保持 |
+| Principal      | raw principal bytes の lexicographic order を仕様化                  | length は metadata                           |
+| int/uint       | 実 width を codec ID に含める。可能なら explicit int64/uint64 を推奨 | target/ABI 差を防ぐ                          |
+| float32/64     | Phase 1 unsupported                                                  | NaN を含む total-order を別 ADR で定義       |
+| object/tuple   | user-defined StableKeyCodec                                          | composite index へ拡張可能                   |
+
+## 7.3 比較時の allocation を抑える
+
+query key は method entry で一度 ordered bytes に encode する。node slot に keyPrefix（先頭 8 bytes または fingerprint）を持たせ、prefix で順序が決まらない場合だけ key blob を stableReadInto() で読む。stored key を K に deserialize して comparator を呼ぶ方式は fallback とし、hot path では encoded bytes のまま比較する。
+
+# 8. 基本アルゴリズム
+
+## 8.1 get / hasKey
+
+query = StableKeyCodec.encode(key)  
+addr = header.rootAddr  
+while addr != 0:  
+node = cache.getOrRead(addr)  
+if node.isLeaf:  
+i = lowerBound(node.slots, query, compareStoredKey)  
+if i matches:  
+return readValue(node.slots\[i\].valueOff, valueLen)  
+return notFound  
+else:  
+child = chooseChildBySeparators(node, query)  
+addr = child
+
+heap に保持するのは query key、現在 node buffer、cache slots、返却する value のみである。全件 index は存在しない。hasKey は value blob を読まず leaf match までで終了する。
+
+## 8.2 insert / update
+
+1\. root から leaf まで search path を辿る。必要なら parent address を node に持つか、path の node address だけを小さな stack に保持する。
+
+2\. 既存 key の場合、新 value block を allocate/write し、leaf slot の value pointer を差し替える。成功後に旧 block を free list へ返す。
+
+3\. 新規 key の場合、key/value block を allocate し leaf slot を挿入する。
+
+4\. leaf が overflow した場合は leaf split。右 leaf を allocate、entries を分割、prev/next link を更新し separator を parent に挿入する。
+
+5\. parent overflow は internal split を root まで伝播する。root split のときだけ height と rootAddr を更新する。
+
+6\. 最後に count/header metadata を更新する。IC message が成功した場合のみ stable changes が commit され、trap なら message の変更は commit されない。
+
+## 8.3 iteration / range
+
+pairs()/keys()/values() は firstLeaf から next pointer を辿る。各 leaf を 1 page ずつ読み、その page の slot を順に yield する。range(start,end) は start key を通常 search して最初の leaf/slot を求め、その後 linked leaf を順次辿る。iterator が全 key を heap に展開しないことを保証する。
+
+## 8.4 clear
+
+structure が専用 MemoryView を所有する場合、clear は新しい empty root と allocator state へ reset することで論理 O(1) にできる。underlying stable memory 自体は shrink しないが、同じ view 内の既存 node/blob 領域を再利用できるよう allocator generation/arena reset を行う。VirtualMemory の bucket が underlying memory manager に返却されるかは別レイヤの policy とし、初版では返却不要でもよい。
+
+## 8.5 remove（将来/optional）
+
+現行 IcStableTable API には per-key delete がないため、B+Tree MVP では remove を必須にしない。追加する場合は leaf slot 削除 + blob free を先に実装し、underflow rebalance/merge は Phase 2 でもよい。rebalance を遅延する場合、検索の正しさと minimum occupancy の緩和を format flag に明示する。
+
+# 9. Optional IcStableHashMap 設計
+
+## 9.1 なぜ従来 open addressing をそのまま採らないか
+
+stable memory 上の open addressing 自体は成立するが、capacity growth で table 全体を rehash すると、ある 1 update message が O(n) になる。IC の instruction budget を考えると、large state 向け storage の成長操作に全件処理を埋め込むのは避けるべきである。
+
+## 9.2 Linear Hashing 案
+
+Hash 版を実装する場合は linear hashing を推奨する。load factor 閾値を超えるたびに全 table ではなく 1 bucket だけ split し、growth cost を多数の update に分散する。
+
+persistent header:  
+magic/version/hashAlgorithmId/hashSeed  
+count, level, split, bucketCount, bucketCapacity  
+  
+bucket(key):  
+h = stableHash(seed, encodedKey)  
+b = h & ((1 \<\< level) - 1)  
+if b \< split:  
+b = h & ((1 \<\< (level + 1)) - 1)  
+  
+when grow:  
+split bucket\[split\] only  
+split += 1  
+if split == (1 \<\< level):  
+level += 1  
+split = 0
+
+| **設計点** | **要求**                                                                                       |
+|------------|------------------------------------------------------------------------------------------------|
+| hash       | algorithm と seed を header に保存。upgrade で結果が変わらない                                 |
+| security   | 外部入力 key を想定し collision flooding を考慮。単に language default hash を永続仕様にしない |
+| bucket     | fixed-size page + slot directory + overflow chain                                              |
+| slot       | fingerprint + keyRef/keyLen + valueRef/valueLen                                                |
+| growth     | 1 bucket incremental split。full rehash 禁止                                                   |
+| iteration  | bucket order。順序 API は提供しない                                                            |
+
+| **優先順位** IcStableHashMap は B+Tree の後に実装する。exact-match が支配的な workload で benchmark 上明確な差が出る場合に採用し、IcStableTable の default backend にはしない。 |
+|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
+# 10. Upgrade / Migration 設計
+
+## 10.1 v2 format の upgrade safety
+
+- magic + layoutVersion + nodeSize + keyCodecId + valueCodecId を open 時に検証する。
+
+- unsupported layout を「新規 empty tree」と誤認しない。必ず explicit error/trap で止める。
+
+- header に reserved bytes を十分確保し、field 追加で既存 offset を動かさない。
+
+- codec の変更は in-place reinterpret せず migration を要求する。
+
+- object value schema の field order 変更等は既存 serialization 互換性を破るため、valueCodecId を application が管理できるようにする。
+
+## 10.2 STBL v1 からの移行
+
+現行 v1 は append-only で同一 key の更新を新 record として末尾へ追加する。したがって migration を offset 昇順に upsert すれば、最後の record が最終値になる。ただし 1 message で全 record を B+Tree へ入れると instruction limit に達し得るため、incremental migration を行う。
+
+| **Stage**               | **動作**                                                                                                                        |
+|-------------------------|---------------------------------------------------------------------------------------------------------------------------------|
+| A. Transitional release | 従来 IcStableTable をそのまま open（この release では最後の full heap rebuild を許容）。v2 store 用の安全な MemoryView を作成。 |
+| B. Freeze / maintenance | v1 への write を止める。read-only service は heap index で継続可能。                                                            |
+| C. migrateStep(N)       | persisted migrationCursor から最大 N records / bytes を順次読み、v2 B+Tree へ upsert。cursor は同一 message で更新。            |
+| D. Verify               | v1 unique count と v2 count、sample/hash verification、全 migration 完了 flag を確認。                                          |
+| E. Native release       | IcStableTable を v2 wrapper に切替。以後起動時 full scan は消える。                                                             |
+
+online dual-write migration も可能だが、migration 中に古い v1 record が新しい dual-write value を上書きしないため source offset/version の比較が必要になる。初版は maintenance-mode incremental migration を推奨し、online migration は別 ADR とする。
+
+## 10.3 IC message atomicity と WAL
+
+ICP 公式ドキュメントでは、Wasm/stable memory の変更は message が成功したときに commit され、message execution が失敗した場合は commit されない。したがって node split の途中で trap したケースを回復するための一般 WAL は必須ではない。ただし論理バグ・format corruption 検出のため generation、magic、bounds check、debug verify を持たせる。
+
+# 11. Public API 案
+
+## 11.1 新型
+
+type IcStableBTreeMap\*\[K, V\] = object  
+\# persistent data is NOT stored here  
+memory: StableMemoryView  
+header: BTreeHeader  
+cache: NodeCache  
+  
+proc initIcStableBTreeMap\*\[K, V\](  
+memory: StableMemoryView,  
+cacheSlots: int = 16  
+): IcStableBTreeMap\[K, V\]  
+  
+proc hasKey\*\[K,V\](t: IcStableBTreeMap\[K,V\], key: K): bool  
+proc \`\[\]\`\*\[K,V\](t: var IcStableBTreeMap\[K,V\], key: K): V  
+proc \`\[\]=\`\*\[K,V\](t: var IcStableBTreeMap\[K,V\], key: K, value: V)  
+proc len\*\[K,V\](t: IcStableBTreeMap\[K,V\]): int  
+proc clear\*\[K,V\](t: var IcStableBTreeMap\[K,V\])  
+iterator pairs\*\[K,V\](t: var IcStableBTreeMap\[K,V\]): (K,V)  
+iterator keys\*\[K,V\](t: var IcStableBTreeMap\[K,V\]): K  
+iterator values\*\[K,V\](t: var IcStableBTreeMap\[K,V\]): V  
+  
+\# new ordered APIs  
+iterator range\*\[K,V\](t: var IcStableBTreeMap\[K,V\], startKey, endKey: K): (K,V)  
+proc lowerBound\*\[K,V\](t: var IcStableBTreeMap\[K,V\], key: K): Option\[(K,V)\]
+
+## 11.2 IcStableTable compatibility
+
+既存 user code の変更を抑えるため、stable_table.nim は facade として残す。fresh deployment では v2 backend を default にし、旧 format は stable_table_v1.nim へ固定する。既存 canister の自動判定で silent migration は行わず、STBL magic を検出した場合は migration-required を明示する。
+
+\# target behavior  
+var users = initIcStableTable\[string, User\](memoryId = 10)  
+users\["alice"\] = user  
+let u = users\["alice"\]  
+for k, v in users.pairs():  
+discard  
+  
+\# internal: IcStableTable delegates to IcStableBTreeMap
+
+## 11.3 Memory API の段階導入
+
+現行 initIcStableTable(baseOffset=0) を直ちに削除せず、RawMemoryView(baseOffset, limit) を経由する deprecated compatibility overload を用意する。一方、新 API は memoryId または StableMemoryView を受け取る形を標準にする。baseOffset だけで無制限 grow する API は新規利用を非推奨にする。
+
+# 12. 実装モジュール構成案
+
+| **File**                                        | **責務**                                         |
+|-------------------------------------------------|--------------------------------------------------|
+| src/nicp_cdk/storage/stable_memory.nim          | 既存 ic0 wrapper。readInto primitive を拡充      |
+| src/nicp_cdk/storage/memory_view.nim            | StableMemoryView interface + RawMemoryView       |
+| src/nicp_cdk/storage/memory_manager.nim         | VirtualMemory / bucket mapping（段階導入）       |
+| src/nicp_cdk/storage/stable_allocator.nim       | fixed page allocator + blob free bins            |
+| src/nicp_cdk/storage/stable_key_codec.nim       | built-in ordered codecs + custom extension point |
+| src/nicp_cdk/storage/stable_btree_node.nim      | node layout, read/write, binary search           |
+| src/nicp_cdk/storage/stable_btree.nim           | B+Tree algorithms / iterator / cache             |
+| src/nicp_cdk/storage/stable_table_v1.nim        | legacy STBL implementation frozen                |
+| src/nicp_cdk/storage/stable_table.nim           | v2 facade / compatibility                        |
+| src/nicp_cdk/storage/stable_table_migration.nim | STBL → SBT2 stepwise migration                   |
+| tests/storage/test_stable_btree.nim             | unit/property/reopen tests                       |
+| examples/stable_memory_indexed/...              | upgrade + large-data example                     |
+
+# 13. Test / Benchmark 計画
+
+## 13.1 Correctness
+
+- random insert/update/get を Nim std Table + sorted reference と比較する property test。
+
+- node split: leftmost/rightmost/middle、root split、連続 split。
+
+- variable key/value: empty string、長い string、Principal、large object value。
+
+- reopen: object を破棄→同じ stable bytes から init→全 lookup が一致。init で record scan されないことを instrumentation で確認。
+
+- iteration/range が stable key order で全件 1 回ずつ返す。
+
+- magic/version/nodeSize/codec mismatch を reject。corrupt offset/length を bounds check で reject。
+
+- trap injection: split/write の各段階で意図的 trap → message rollback 後に tree が旧状態のまま。
+
+- legacy migration: duplicate key history、empty table、中断/resume、複数 migrateStep。
+
+## 13.2 Performance
+
+| **Metric**        | **v1 現行**                    | **v2 target**                                                   |
+|-------------------|--------------------------------|-----------------------------------------------------------------|
+| init stable reads | 全 historical records          | 固定: superblock + allocator metadata（root prefetch optional） |
+| init heap         | O(unique keys)                 | O(cache slots)                                                  |
+| get               | heap hash + value read         | O(tree height) node reads + value read                          |
+| set existing      | append                         | search + value replace/free                                     |
+| iteration         | heap key index + stable values | leaf sequential read                                            |
+| growth spike      | init/rebuild が最大            | node split の局所コスト                                         |
+
+benchmark dataset は 1k / 10k / 100k / 1M live keys、update history 1x / 10x を用意する。特に v1 は 10x update history で init cost が増えるため、v2 の「history 非依存」を明確に測る。nodeSize 1KiB/2KiB/4KiB、cacheSlots 0/1/16/32 を比較する。
+
+| **Acceptance target** | **基準**                                                                             |
+|-----------------------|--------------------------------------------------------------------------------------|
+| Startup               | 1M keys でも全件 scan なし。entry count に比例する stableRead 呼び出しが発生しない   |
+| Heap                  | default cache を除き key count に比例する persistent index object を heap に持たない |
+| Lookup                | search path 以外の node/record を読まない                                            |
+| Upgrade               | v2→同一 codec/layout upgrade で migration 不要                                       |
+| Memory safety         | 全 stable address/length を view bounds 内で検証                                     |
+| Compatibility         | 既存 public IcStableTable 基本 API の compile/use pattern を維持                     |
+
+# 14. リスクと対策
+
+| **Risk**                        | **影響**                               | **対策**                                                                |
+|---------------------------------|----------------------------------------|-------------------------------------------------------------------------|
+| stable read の instruction cost | heap hash より lookup が遅くなる可能性 | high fanout + binary search + prefix + bounded cache + benchmark        |
+| key codec 仕様変更              | tree ordering が破壊                   | codecId/version を persisted、in-place change 禁止                      |
+| value schema 変更               | deserialize failure/意味破壊           | valueCodecId + explicit migration policy                                |
+| variable blob fragmentation     | stable memory 使用量増加               | segregated free bins、key/value arena 分離、metrics                     |
+| baseOffset collision            | データ破損                             | MemoryView limit + VirtualMemory を標準化                               |
+| hash flooding                   | DoS/instruction spike                  | Hash 版は deterministic seeded hash + fingerprint + bucket chain limits |
+| memory manager bucket leak      | clear 後も physical allocation 残存    | 初版は既知制約として明示。将来 reclamation                              |
+| migration instruction limit     | upgrade不能                            | transitional release + bounded migrateStep                              |
+| Nim generics/ABI width          | persistent key encoding 差異           | fixed-width codec を優先、int/uint width を codec ID に含める           |
+
+# 15. 実装フェーズ
+
+| **Phase**         | **Deliverable**                                                | **Exit criteria**                                  |
+|-------------------|----------------------------------------------------------------|----------------------------------------------------|
+| 0\. Measurement   | v1 init/read/write instrumentation + baseline benchmark        | history 1x/10x の init cost を再現                 |
+| 1\. Foundation    | MemoryView, BTree header, fixed node allocator, StableKeyCodec | reopen で header/allocator を O(1) load            |
+| 2\. B+Tree core   | get/hasKey/insert/update/split + node cache                    | random property tests pass、1M synthetic build     |
+| 3\. API           | iteration/range/clear、IcStableTable facade、docs/example      | 既存 stable table sample を v2 で動作              |
+| 4\. Migration     | stable_table_v1 freeze + incremental migration tool            | 中断/resume + duplicate history test pass          |
+| 4.5 MemoryManager | VirtualMemory bucket mapping を一般 API に昇格                 | 複数 growing structures が isolation               |
+| 5\. Hash optional | IcStableHashMap with linear hashing                            | full rehash なし、exact-match benchmark で採用判断 |
+
+Phase 4.5 は技術的には Phase 1 前に実装してもよい。既存 deployed canister との offset compatibility が最も難しいため、B+Tree core と memory abstraction を先に完成させ、manager は separate module として導入する順序を推奨する。fresh project では VirtualMemory を default にする。
+
+# 16. 実装時の具体的判断
+
+- 「stable index を heap に mirror する」設計は採用しない。cache は bounded で、全件 rebuild code path を v2 に持ち込まない。
+
+- B+Tree node は variable-length payload を直接詰め込み過ぎず、slot は pointer/reference 中心にする。split cost と format complexity を抑える。
+
+- 既存 serialize(key) を byte comparator に流用しない。ordered key codec を独立させる。
+
+- stableRead() の newSeq allocation を hot path で乱用せず stableReadInto() と reusable buffers を使う。
+
+- header/node の every offset/length を stable memory size と MemoryView limit に対して検証する。corruption で任意 read を起こさない。
+
+- node cache は性能 optimization であり correctness dependency にしない。cacheSlots=0 でも全 test が通ること。
+
+- format version と codec version をテスト fixture として repository に固定し、将来 refactor でも bytes compatibility を検証する。
+
+- Hash を追加するときは Rust SHashMap の「deterministic hash」は学ぶが、「75% で full rehash」は踏襲しない。
+
+# 17. 最終提案
+
+NICP の stable storage v2 は「stable memory を保存場所として使う」のではなく、「stable memory 自体を searchable address space として使う」設計へ変更する。現行 v1 の append-only data + heap index は小規模では単純だが、起動時 scan と heap O(n) が large state の上限になる。
+
+最初に IcStableBTreeMap\[K,V\] を B+Tree として実装し、root/allocator/node/key/value を stable memory に永続化する。heap には superblock metadata と小さな node cache だけを置く。IcStableTable はこの backend の wrapper として API 互換を維持する。key の ordered codec は existing serialization と分離する。
+
+Hash index は別用途として有効だが、単純 open addressing の full rehash は避ける。必要になった時点で linear hashing の incremental bucket split を実装し、exact-match workload の benchmark で B+Tree より優位なケースに限定して選択できるようにする。
+
+| **Go / No-Go** Go: B+Tree v2。No-Go: 現行 append log に persistent hash table の全 key を別途 mirror するだけの設計。後者は index 再構築問題を消しても、二重 storage・rehash・migration complexity を増やしやすい。 |
+|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
+# 参考資料
+
+- **[R1] NICP current StableTable**  
+  https://github.com/dumblepy/nicp_cdk/blob/main/src/nicp_cdk/storage/stable_table.nim
+
+- **[R2] NICP stable memory wrapper**  
+  https://github.com/dumblepy/nicp_cdk/blob/main/src/nicp_cdk/storage/stable_memory.nim
+
+- **[R3] NICP serialization**  
+  https://github.com/dumblepy/nicp_cdk/blob/main/src/nicp_cdk/storage/serialization.nim
+
+- **[R4] NICP stable memory documentation**  
+  https://github.com/dumblepy/nicp_cdk/blob/main/docs/en/stable_memory.md
+
+- **[R5] ICP Developer Docs - Stable structures (Rust)**  
+  https://docs.internetcomputer.org/languages/rust/stable-structures/
+
+- **[R6] ic-stable-structures BTreeMap 0.7.2 docs**  
+  https://docs.rs/ic-stable-structures/latest/ic_stable_structures/btreemap/index.html
+
+- **[R7] ic-stable-structures MemoryManager 0.7.2 docs**  
+  https://docs.rs/ic-stable-structures/latest/ic_stable_structures/memory_manager/struct.MemoryManager.html
+
+- **[R8] DFINITY stable-structures btreemap source**  
+  https://github.com/dfinity/stable-structures/blob/main/src/btreemap.rs
+
+- **[R9] DFINITY stable-structures allocator source**  
+  https://github.com/dfinity/stable-structures/blob/main/src/btreemap/allocator.rs
+
+- **[R10] DFINITY stable-structures node source**  
+  https://github.com/dfinity/stable-structures/blob/main/src/btreemap/node.rs
+
+- **[R11] ic-stable-memory SHashMap source**  
+  https://github.com/seniorjoinu/ic-stable-memory/blob/master/src/collections/hash_map/mod.rs
+
+- **[R12] ICP Developer Docs - Enhanced orthogonal persistence (Motoko)**  
+  https://docs.internetcomputer.org/languages/motoko/fundamentals/actors/orthogonal-persistence/enhanced/
+
+- **[R13] ICP Developer Docs - Stable memory and regions (Motoko)**  
+  https://docs.internetcomputer.org/languages/motoko/icp-features/stable-memory/
+
+- **[R14] NatLabs MemoryBTree README (archived repository)**  
+  https://github.com/NatLabs/memory-collection/blob/main/src/MemoryBTree/readme.md
+
+調査時点: 2026-08-20。GitHub の対象 repository は main/master の公開 source を参照。Motoko community の NatLabs/memory-collection は archived であるため、推奨ライブラリというより設計 prior art として扱った。

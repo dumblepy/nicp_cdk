@@ -204,7 +204,7 @@ proc seqInt_values() {.query.} =
 # ==================================================
 # Table[principal, string]
 # ==================================================
-var tableDb = initIcStableTable[Principal, string](TableDbOffset)
+var tableDb = initIcStableTable[Principal, string](TableDbOffset, limit = 1000000'u64)
 
 proc table_reset() {.update.} =
   tableDb.clear()
@@ -262,7 +262,7 @@ type UserProfile = object
   name: string
   active: bool
 
-var objectDb = initIcStableTable[Principal, UserProfile](ObjectDbOffset)
+var objectDb = initIcStableTable[Principal, UserProfile](ObjectDbOffset, limit = 1000000'u64)
 
 proc object_set() {.update.} =
   try:

@@ -3,6 +3,8 @@ import ../../../../src/nicp_cdk
 import ../../../../src/nicp_cdk/storage/stable_value
 import ../../../../src/nicp_cdk/storage/stable_seq
 import ../../../../src/nicp_cdk/storage/stable_table
+import ../../../../src/nicp_cdk/storage/stable_btree
+import ../../../../src/nicp_cdk/storage/memory_view
 
 # Define base offsets for each storage structure to avoid collision
 const
@@ -18,6 +20,8 @@ const
   SeqIntDbOffset = 900000'u64
   TableDbOffset = 2000000'u64
   ObjectDbOffset = 3000000'u64
+  BTreeDbOffset = 4000000'u64
+  BTreeDbLimit = 1000000'u64
 
 # ==================================================
 # int
@@ -204,7 +208,7 @@ proc seqInt_values() {.query.} =
 # ==================================================
 # Table[principal, string]
 # ==================================================
-var tableDb = initIcStableTable[Principal, string](TableDbOffset)
+var tableDb = initIcStableTable[Principal, string](TableDbOffset, limit = 1000000'u64)
 
 proc table_reset() {.update.} =
   tableDb.clear()
@@ -262,7 +266,7 @@ type UserProfile = object
   name: string
   active: bool
 
-var objectDb = initIcStableTable[Principal, UserProfile](ObjectDbOffset)
+var objectDb = initIcStableTable[Principal, UserProfile](ObjectDbOffset, limit = 1000000'u64)
 
 proc object_set() {.update.} =
   try:
@@ -281,3 +285,63 @@ proc object_get() {.query.} =
   let principal = Msg.caller()
   let value = objectDb[principal]
   reply(value)
+
+# ==================================================
+# IcStableBTreeMap[string, string]
+# ==================================================
+# This map keeps its searchable index in stable memory.  The bounded view
+# isolates it from the legacy stable values/tables above, while `range` shows
+# the key-order traversal provided by the B+Tree backend.
+type BTreeEntry = object
+  key: string
+  value: string
+
+var btreeDb = initIcStableBTreeMap[string, string](
+  initRawMemoryView(BTreeDbOffset, BTreeDbLimit)
+)
+
+proc btree_reset() {.update.} =
+  btreeDb.clear()
+  reply()
+
+proc btree_set() {.update.} =
+  try:
+    icEcho("btree_set: begin")
+    let request = Request.new()
+    icEcho("btree_set: request decoded")
+    let key = request.getStr(0)
+    let value = request.getStr(1)
+    icEcho("btree_set: writing key=", key)
+    btreeDb[key] = value
+    icEcho("btree_set: write complete")
+    reply()
+    icEcho("btree_set: reply sent")
+  except Exception as e:
+    ## The runtime reports uncaught Nim exceptions as a generic IC trap. Keep
+    ## the concrete reason in canister logs for malformed requests or a
+    ## corrupted/overlapping stable-memory region.
+    icEcho("btree_set failed: ", e.msg)
+    raise
+
+proc btree_get() {.query.} =
+  let request = Request.new()
+  let key = request.getStr(0)
+  reply(btreeDb[key])
+
+proc btree_hasKey() {.query.} =
+  let request = Request.new()
+  reply(btreeDb.hasKey(request.getStr(0)))
+
+proc btree_len() {.query.} =
+  reply(uint(btreeDb.len()))
+
+proc btree_range() {.query.} =
+  ## Returns entries in ascending key order for the half-open interval
+  ## `[startKey, endKey)`.
+  let request = Request.new()
+  let startKey = request.getStr(0)
+  let endKey = request.getStr(1)
+  var entries: seq[BTreeEntry] = @[]
+  for key, value in btreeDb.range(startKey, endKey):
+    entries.add(BTreeEntry(key: key, value: value))
+  reply(entries)

@@ -1,0 +1,39 @@
+discard """
+  cmd: "nim check --skipUserCfg $file"
+"""
+
+## Compile-time coverage for the public generic API.  Runtime/reopen coverage
+## runs in the canister test environment because stable64 is an ic0 import.
+import ../../src/nicp_cdk/storage/stable_btree
+import ../../src/nicp_cdk/storage/stable_table
+import ../../src/nicp_cdk/storage/stable_table_migration
+import ../../src/nicp_cdk/storage/memory_view
+
+proc apiShape() =
+  var table = initIcStableBTreeMap[string, uint64]()
+  table["one"] = 1
+  discard table.hasKey("one")
+  discard table["one"]
+  discard table.len
+  discard table.lowerBound("one")
+  for key, value in table.pairs:
+    discard key
+    discard value
+  for key, value in table.range("a", "z"):
+    discard key
+    discard value
+  table.clear()
+  var uncached = initIcStableBTreeMap[uint32, string](cacheSlots = 0)
+  uncached[1'u32] = "one"
+  discard uncached[1'u32]
+
+proc facadeAndMigrationShape() =
+  var table = initIcStableTable[string, uint64](1024, limit = 65536)
+  table["one"] = 1
+  var migration = initStableTableMigration(initRawMemoryView(0, 1024), initRawMemoryView(2048, 64))
+  discard migration.migrateStep(table, 1)
+  discard migration.isComplete
+
+static:
+  doAssert compiles(apiShape())
+  doAssert compiles(facadeAndMigrationShape())

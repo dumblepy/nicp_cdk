@@ -35,4 +35,10 @@ service : {
   "table_values": () -> (vec text) query;
   "object_set": (id : nat, name : text, active : bool) -> ();
   "object_get": () -> (record { id : nat; name : text; active : bool }) query;
+  "btree_reset": () -> ();
+  "btree_set": (text, text) -> ();
+  "btree_get": (text) -> (text) query;
+  "btree_hasKey": (text) -> (bool) query;
+  "btree_len": () -> (nat) query;
+  "btree_range": (text, text) -> (vec record { key : text; value : text }) query;
 };
