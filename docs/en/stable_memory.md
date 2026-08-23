@@ -11,7 +11,7 @@ types built on top of stable memory:
 
 - `IcStableValue[T]` for a single value
 - `IcStableSeq[T]` for a sequence of values
-- `IcStableTable[K, V]` for a key-value store
+- `IcStableBTreeMap[K, V]` for an ordered key-value store
 
 All values are serialized with the custom format in
 `src/nicp_cdk/storage/serialization.nim`.
@@ -41,12 +41,12 @@ items.delete(0)
 let length = items.len()
 ```
 
-### IcStableTable
+### IcStableBTreeMap
 
 ```nim
-import nicp_cdk/storage/stable_table
+import nicp_cdk/storage/stable_btree
 
-var table = initIcStableTable[string, uint64]()
+var table = initIcStableBTreeMap[string, uint64]()
 table["alice"] = 100
 if table.hasKey("alice"):
   echo table["alice"]
@@ -82,26 +82,25 @@ Header size: 32 bytes.
 32..   entries: [elemLen u32][elemBytes] ...
 ```
 
-### IcStableTable layout
+### IcStableBTreeMap layout
 
-Header size: 32 bytes.
+The B+Tree persists an `SBT2` superblock, node pages, and key/value blobs.
+Initialization reads only the superblock and bounded cache metadata; it does
+not rebuild an in-memory index by scanning all entries.
 
 ```
-0..3   magic "STBL"
-4..7   version (u32, little-endian)
-8..15  element count (u64, little-endian)
-16..23 data end offset (u64, little-endian)
-24..31 reserved
-32..   entries: [keyLen u32][valueLen u32][keyBytes][valueBytes] ...
+0..3   magic "SBT2"
+4..    versioned superblock, root address, count, allocator metadata
+...    fixed-size B+Tree node pages and variable key/value blobs
 ```
 
-Entries are append-only. On initialization, the table or sequence scans the data
-area to rebuild its in-memory index.
+Entries are searched directly in stable memory. Keys are stored with an
+order-preserving codec, allowing ordered iteration and range queries.
 
 ## Serialization Notes
 
 - Fixed-size values are stored in little-endian byte order.
-- Variable-size values (string, Principal, seq, Table) are stored as
+- Variable-size values (string, Principal, seq, B+Tree values) are stored as
   `length (u32) + bytes`.
 - Nim objects are serialized by field order.
 

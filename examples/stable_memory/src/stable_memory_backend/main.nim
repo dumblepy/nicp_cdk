@@ -1,8 +1,8 @@
-import std/tables
 import ../../../../src/nicp_cdk
 import ../../../../src/nicp_cdk/storage/stable_value
 import ../../../../src/nicp_cdk/storage/stable_seq
-import ../../../../src/nicp_cdk/storage/stable_table
+import ../../../../src/nicp_cdk/storage/stable_btree
+import ../../../../src/nicp_cdk/storage/memory_view
 
 # Define base offsets for each storage structure to avoid collision
 const
@@ -16,8 +16,8 @@ const
   CharDbOffset = 700000'u64
   ByteDbOffset = 800000'u64
   SeqIntDbOffset = 900000'u64
-  TableDbOffset = 2000000'u64
-  ObjectDbOffset = 3000000'u64
+  BTreeDbOffset = 2000000'u64
+  BTreeDbLimit = 1000000'u64
 
 # ==================================================
 # int
@@ -202,82 +202,50 @@ proc seqInt_values() {.query.} =
   reply(seqIntDb.toSeq())
 
 # ==================================================
-# Table[principal, string]
+# IcStableBTreeMap[string, string]
 # ==================================================
-var tableDb = initIcStableTable[Principal, string](TableDbOffset, limit = 1000000'u64)
+type BTreeEntry = object
+  key: string
+  value: string
 
-proc table_reset() {.update.} =
-  tableDb.clear()
+var btreeDb = initIcStableBTreeMap[string, string](
+  initRawMemoryView(BTreeDbOffset, BTreeDbLimit)
+)
+
+proc btree_reset() {.update.} =
+  btreeDb.clear()
   reply()
 
-proc table_set() {.update.} =
-  let principal = Msg.caller()
-  let request = Request.new()
-  let message = request.getStr(0)
-  tableDb[principal] = message
-  reply()
-
-proc table_get() {.query.} =
-  let principal = Msg.caller()
-  let value = tableDb[principal]
-  reply(value)
-
-proc table_len() {.query.} =
-  reply(uint(tableDb.len()))
-
-proc table_hasKey() {.query.} =
-  let principal = Msg.caller()
-  reply(tableDb.hasKey(principal))
-
-proc table_setFor() {.update.} =
-  let request = Request.new()
-  let principal = request.getPrincipal(0)
-  let message = request.getStr(1)
-  tableDb[principal] = message
-  reply()
-
-proc table_getFor() {.query.} =
-  let request = Request.new()
-  let principal = request.getPrincipal(0)
-  let value = tableDb[principal]
-  reply(value)
-
-proc table_keys() {.query.} =
-  var keys: seq[Principal] = @[]
-  for key in tableDb.keys():
-    keys.add(key)
-  reply(keys)
-
-proc table_values() {.query.} =
-  var values: seq[string] = @[]
-  for value in tableDb.values():
-    values.add(value)
-  reply(values)
-
-# ==================================================
-# object
-# ==================================================
-type UserProfile = object
-  id: uint
-  name: string
-  active: bool
-
-var objectDb = initIcStableTable[Principal, UserProfile](ObjectDbOffset, limit = 1000000'u64)
-
-proc object_set() {.update.} =
+proc btree_set() {.update.} =
   try:
-    let principal = Msg.caller()
+    icEcho("btree_set: begin")
     let request = Request.new()
-    let id = request.getNat(0)
-    let name = request.getStr(1)
-    let active = request.getBool(2)
-    objectDb[principal] = UserProfile(id: id, name: name, active: active)
+    let key = request.getStr(0)
+    let value = request.getStr(1)
+    icEcho("btree_set: writing key=", key)
+    btreeDb[key] = value
+    icEcho("btree_set: write complete")
     reply()
   except Exception as e:
-    echo "Error: ", e.msg
-    reply(e.msg)
+    icEcho("btree_set failed: ", e.msg)
+    raise
 
-proc object_get() {.query.} =
-  let principal = Msg.caller()
-  let value = objectDb[principal]
-  reply(value)
+proc btree_get() {.query.} =
+  let request = Request.new()
+  reply(btreeDb[request.getStr(0)])
+
+proc btree_hasKey() {.query.} =
+  let request = Request.new()
+  reply(btreeDb.hasKey(request.getStr(0)))
+
+proc btree_len() {.query.} =
+  reply(uint(btreeDb.len()))
+
+proc btree_range() {.query.} =
+  let request = Request.new()
+  let startKey = request.getStr(0)
+  let endKey = request.getStr(1)
+  var entries: seq[BTreeEntry] = @[]
+  for key, value in btreeDb.range(startKey, endKey):
+    entries.add(BTreeEntry(key: key, value: value))
+  reply(entries)

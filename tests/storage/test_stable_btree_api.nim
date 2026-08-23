@@ -5,8 +5,6 @@ discard """
 ## Compile-time coverage for the public generic API.  Runtime/reopen coverage
 ## runs in the canister test environment because stable64 is an ic0 import.
 import ../../src/nicp_cdk/storage/stable_btree
-import ../../src/nicp_cdk/storage/stable_table
-import ../../src/nicp_cdk/storage/stable_table_migration
 import ../../src/nicp_cdk/storage/memory_view
 
 proc apiShape() =
@@ -27,13 +25,5 @@ proc apiShape() =
   uncached[1'u32] = "one"
   discard uncached[1'u32]
 
-proc facadeAndMigrationShape() =
-  var table = initIcStableTable[string, uint64](1024, limit = 65536)
-  table["one"] = 1
-  var migration = initStableTableMigration(initRawMemoryView(0, 1024), initRawMemoryView(2048, 64))
-  discard migration.migrateStep(table, 1)
-  discard migration.isComplete
-
 static:
   doAssert compiles(apiShape())
-  doAssert compiles(facadeAndMigrationShape())

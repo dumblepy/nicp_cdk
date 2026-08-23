@@ -1,8 +1,6 @@
-import std/tables
 import ../../../../src/nicp_cdk
 import ../../../../src/nicp_cdk/storage/stable_value
 import ../../../../src/nicp_cdk/storage/stable_seq
-import ../../../../src/nicp_cdk/storage/stable_table
 import ../../../../src/nicp_cdk/storage/stable_btree
 import ../../../../src/nicp_cdk/storage/memory_view
 
@@ -18,9 +16,7 @@ const
   CharDbOffset = 700000'u64
   ByteDbOffset = 800000'u64
   SeqIntDbOffset = 900000'u64
-  TableDbOffset = 2000000'u64
-  ObjectDbOffset = 3000000'u64
-  BTreeDbOffset = 4000000'u64
+  BTreeDbOffset = 2000000'u64
   BTreeDbLimit = 1000000'u64
 
 # ==================================================
@@ -204,87 +200,6 @@ proc seqInt_delete() {.update.} =
 
 proc seqInt_values() {.query.} =
   reply(seqIntDb.toSeq())
-
-# ==================================================
-# Table[principal, string]
-# ==================================================
-var tableDb = initIcStableTable[Principal, string](TableDbOffset, limit = 1000000'u64)
-
-proc table_reset() {.update.} =
-  tableDb.clear()
-  reply()
-
-proc table_set() {.update.} =
-  let principal = Msg.caller()
-  let request = Request.new()
-  let message = request.getStr(0)
-  tableDb[principal] = message
-  reply()
-
-proc table_get() {.query.} =
-  let principal = Msg.caller()
-  let value = tableDb[principal]
-  reply(value)
-
-proc table_len() {.query.} =
-  reply(uint(tableDb.len()))
-
-proc table_hasKey() {.query.} =
-  let principal = Msg.caller()
-  reply(tableDb.hasKey(principal))
-
-proc table_setFor() {.update.} =
-  let request = Request.new()
-  let principal = request.getPrincipal(0)
-  let message = request.getStr(1)
-  tableDb[principal] = message
-  reply()
-
-proc table_getFor() {.query.} =
-  let request = Request.new()
-  let principal = request.getPrincipal(0)
-  let value = tableDb[principal]
-  reply(value)
-
-proc table_keys() {.query.} =
-  var keys: seq[Principal] = @[]
-  for key in tableDb.keys():
-    keys.add(key)
-  reply(keys)
-
-proc table_values() {.query.} =
-  var values: seq[string] = @[]
-  for value in tableDb.values():
-    values.add(value)
-  reply(values)
-
-# ==================================================
-# object
-# ==================================================
-type UserProfile = object
-  id: uint
-  name: string
-  active: bool
-
-var objectDb = initIcStableTable[Principal, UserProfile](ObjectDbOffset, limit = 1000000'u64)
-
-proc object_set() {.update.} =
-  try:
-    let principal = Msg.caller()
-    let request = Request.new()
-    let id = request.getNat(0)
-    let name = request.getStr(1)
-    let active = request.getBool(2)
-    objectDb[principal] = UserProfile(id: id, name: name, active: active)
-    reply()
-  except Exception as e:
-    echo "Error: ", e.msg
-    reply(e.msg)
-
-proc object_get() {.query.} =
-  let principal = Msg.caller()
-  let value = objectDb[principal]
-  reply(value)
 
 # ==================================================
 # IcStableBTreeMap[string, string]

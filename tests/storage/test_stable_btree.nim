@@ -5,12 +5,9 @@ discard """
 import std/unittest
 import std/options
 import std/tables
-import std/endians
 import ../../src/nicp_cdk/storage/memory_view
 import ../../src/nicp_cdk/storage/stable_btree
 import ../../src/nicp_cdk/storage/stable_key_codec
-import ../../src/nicp_cdk/storage/stable_table_migration
-import ../../src/nicp_cdk/storage/serialization
 
 type InMemoryStable = ref object
   data: seq[byte]
@@ -37,22 +34,6 @@ proc memoryView(memory: InMemoryStable): StableMemoryView =
       if endOffset > memory.data.len: memory.data.setLen(endOffset)
       for i, value in data: memory.data[int(offset) + i] = value
   )
-
-proc put32(data: var openArray[byte], offset: int, value: uint32) =
-  var le = value
-  littleEndian32(addr data[offset], addr le)
-proc put64(data: var openArray[byte], offset: int, value: uint64) =
-  var le = value
-  littleEndian64(addr data[offset], addr le)
-
-proc appendV1Record(data: var seq[byte], key: uint32, value: string) =
-  let keyData = serialize(key)
-  let valueData = serialize(value)
-  let recordStart = data.len
-  data.setLen(recordStart + 8 + keyData.len + valueData.len)
-  data.put32(recordStart, uint32(keyData.len)); data.put32(recordStart + 4, uint32(valueData.len))
-  for i, byteValue in keyData: data[recordStart + 8 + i] = byteValue
-  for i, byteValue in valueData: data[recordStart + 8 + keyData.len + i] = byteValue
 
 suite "stable B+Tree":
   test "split, ordered iteration, update, and reopen":
@@ -103,27 +84,6 @@ suite "stable B+Tree":
       if previous.isSome: check previous.get < key
       check reference[key] == value
       previous = some(key)
-
-  test "v1 migration resumes and keeps the last duplicate value":
-    let source = InMemoryStable(data: newSeq[byte](32))
-    source.data[0] = byte('S'); source.data[1] = byte('T'); source.data[2] = byte('B'); source.data[3] = byte('L')
-    source.data.put32(4, 1'u32)
-    source.data.appendV1Record(1'u32, "first")
-    source.data.appendV1Record(2'u32, "second")
-    source.data.appendV1Record(1'u32, "latest")
-    source.data.put64(16, uint64(source.data.len))
-    let migrationState = InMemoryStable(data: @[])
-    let destinationBacking = InMemoryStable(data: @[])
-    var destination = initIcStableBTreeMap[uint32, string](destinationBacking.memoryView())
-    var migration = initStableTableMigration(source.memoryView(), migrationState.memoryView())
-    check migration.migrateStep(destination, 1) == 1
-    check not migration.isComplete
-    var resumed = initStableTableMigration(source.memoryView(), migrationState.memoryView())
-    check resumed.migrateStep(destination, 10) == 2
-    check resumed.isComplete
-    check destination.len == 2
-    check destination[1'u32] == "latest"
-    check destination[2'u32] == "second"
 
   test "custom key codec is persisted and used for ordering":
     let backing = InMemoryStable(data: @[])

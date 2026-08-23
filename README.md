@@ -195,15 +195,15 @@ seqIntDb.clear()
 
 Supported element types: primitive types and Principal
 
-### IcStableTable - Persistent Key-Value Store
+### IcStableBTreeMap - Persistent Key-Value Store
 
 Store key-value pairs that persist across canister upgrades.
 
 ```nim
-import nicp_cdk/storage/stable_table
+import nicp_cdk/storage/stable_btree
 
-# Create a stable table mapping strings to integers
-var scoreTable = initIcStableTable[string, uint]()
+# Create a stable B+Tree mapping strings to integers
+var scoreTable = initIcStableBTreeMap[string, uint]()
 
 # Store a key-value pair
 scoreTable["alice"] = 100
@@ -216,7 +216,7 @@ let aliceScore = scoreTable["alice"]
 if scoreTable.hasKey("alice"):
   echo "Alice has a score"
 
-# Get table size
+# Get map size
 let numPlayers = scoreTable.len()
 
 # Iterate over all pairs
@@ -232,19 +232,19 @@ Supported value types: primitive types, Principal, and Nim objects
 
 ### Example: Storing Custom Objects
 
-You can also store custom Nim objects in a stable table:
+You can also store custom Nim objects in a stable B+Tree:
 
 ```nim
 import nicp_cdk
-import nicp_cdk/storage/stable_table
+import nicp_cdk/storage/stable_btree
 
 type UserProfile = object
   id: uint
   name: string
   active: bool
 
-# Create a stable table mapping principals to user profiles
-var userTable = initIcStableTable[Principal, UserProfile]()
+# Create a stable B+Tree mapping principals to user profiles
+var userTable = initIcStableBTreeMap[Principal, UserProfile]()
 
 # Store a user profile
 let caller = Msg.caller()

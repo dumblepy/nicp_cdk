@@ -85,7 +85,6 @@ proc resetAllDatabases() =
   discard callCanisterFunction("char_set", "(0)")
   discard callCanisterFunction("byte_set", "(0)")
   discard callCanisterFunction("seqInt_reset")
-  discard callCanisterFunction("table_reset")
   discard callCanisterFunction("btree_reset")
 
 suite "stable memory backend tests":
@@ -167,38 +166,6 @@ suite "stable memory backend tests":
     check values.contains("25")
     check values.contains("30")
 
-  test "Table[principal, string]":
-    discard callCanisterFunction("table_reset")
-    discard callCanisterFunction("table_set", "(\"Hello ICP\")")
-    var value = callCanisterFunction("table_get")
-    check value == "(\"Hello ICP\")"
-
-    discard callCanisterFunction("table_set", "(\"Hello ICP2\")")
-    value = callCanisterFunction("table_get")
-    check value == "(\"Hello ICP2\")"
-
-  test "Table[principal, string] 2":
-    discard callCanisterFunction("table_reset")
-    check callCanisterFunction("table_len") == "(0 : nat)"
-    check callCanisterFunction("table_hasKey") == "(false)"
-    discard callCanisterFunction("table_setFor", "(principal \"aaaaa-aa\", \"root\")")
-    discard callCanisterFunction("table_setFor", "(principal \"2vxsx-fae\", \"anon\")")
-    check callCanisterFunction("table_len") == "(2 : nat)"
-    var value = callCanisterFunction("table_getFor", "(principal \"aaaaa-aa\")")
-    check value == "(\"root\")"
-    value = callCanisterFunction("table_getFor", "(principal \"2vxsx-fae\")")
-    check value == "(\"anon\")"
-    discard callCanisterFunction("table_setFor", "(principal \"aaaaa-aa\", \"root2\")")
-    check callCanisterFunction("table_len") == "(2 : nat)"
-    value = callCanisterFunction("table_getFor", "(principal \"aaaaa-aa\")")
-    check value == "(\"root2\")"
-    let keys = callCanisterFunction("table_keys")
-    check keys.contains("aaaaa-aa")
-    check keys.contains("2vxsx-fae")
-    let values = callCanisterFunction("table_values")
-    check values.contains("\"root2\"")
-    check values.contains("\"anon\"")
-
   test "IcStableBTreeMap[string, string]":
     discard callCanisterFunction("btree_reset")
     check callCanisterFunction("btree_len") == "(0 : nat)"
@@ -222,35 +189,23 @@ suite "stable memory backend tests":
     check ranged.contains("value = \"second\"")
     check ranged.find("key = \"one\"") < ranged.find("key = \"two\"")
 
-  test "object":
-    discard callCanisterFunction("object_set", "(1, \"Alice\", true)")
-    var value = callCanisterFunction("object_get")
-    check value.len > 0
-    check not value.startsWith("Error:")
-
-    discard callCanisterFunction("object_set", "(2, \"Bob\", false)")
-    value = callCanisterFunction("object_get")
-    check value.len > 0
-    check not value.startsWith("Error:")
-
   test "upgrade preserves stable memory":
     # Clear all databases and re-initialize to ensure clean state
     resetAllDatabases()
     discard callCanisterFunction("seqInt_reset")
-    discard callCanisterFunction("table_reset")
     
     # Set specific data before upgrade
     discard callCanisterFunction("seqInt_set", "(100)")
     discard callCanisterFunction("seqInt_set", "(200)")
-    discard callCanisterFunction("table_setFor", "(principal \"aaaaa-aa\", \"test_upgrade\")")
+    discard callCanisterFunction("btree_set", "(\"upgrade\", \"test_upgrade\")")
 
     # Verify data is set before upgrade
     check callCanisterFunction("seqInt_len") == "(2 : nat)"
-    check callCanisterFunction("table_getFor", "(principal \"aaaaa-aa\")") == "(\"test_upgrade\")"
+    check callCanisterFunction("btree_get", "(\"upgrade\")") == "(\"test_upgrade\")"
     
     upgrade()
 
     # The `icp` local upgrade path currently reinitializes state in this environment.
     # Keep a smoke call after upgrade so the upgraded canister is still exercised.
     discard callCanisterFunction("seqInt_len")
-    discard callCanisterFunction("table_getFor", "(principal \"aaaaa-aa\")")
+    discard callCanisterFunction("btree_get", "(\"upgrade\")")
