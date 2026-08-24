@@ -5,7 +5,7 @@ discard """
 
 import unittest
 import std/tables
-import ../../src/nicp_cdk/storage/serialization
+import ../../src/nicp_cdk/storage/libs/serialization
 import ../../src/nicp_cdk/ic_types/ic_principal
 
 type UserProfile = object

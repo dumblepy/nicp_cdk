@@ -401,7 +401,7 @@ proc new*(args: seq[string]): int =
 
   let projectName = args[0].replace(" ", "_").replace("-", "_")
   let projectPath = getCurrentDir() / projectName
-  let hasFrontend = not (args.len >= 2 and args[1].toLowerAscii in ["none", "--no-frontend"])
+  let hasFrontend = not (args.len >= 2 and args[1].toLowerAscii in ["none", "--no-frontend", "--backend"])
 
   putEnv("USER", resolveUserName())
 

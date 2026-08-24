@@ -44,6 +44,12 @@ suite "ic_nat tests":
     let request = newMockRequest(decoded.values)
     check request.getNat32(0) == n
 
+  test("nat32-compatible key accepts nat and nat32"):
+    let natRequest = newMockRequest(@[newCandidNat(10'u)])
+    let nat32Request = newMockRequest(@[newCandidNat32(10'u32)])
+    check natRequest.getNat32Compatible(0) == 10'u32
+    check nat32Request.getNat32Compatible(0) == 10'u32
+
   test("nat64"):
     let n = 10.uint64
     let candidNat64 = newCandidNat64(n)

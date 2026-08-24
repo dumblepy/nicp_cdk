@@ -47,6 +47,23 @@ proc getNat32*(self:Request, index:int): uint32 =
   assert self.values[index].kind == ctNat32, "Expected nat32 type, got: " & $self.values[index].kind
   return self.values[index].nat32Val
 
+proc getNat32Compatible*(self: Request, index: int): uint32 =
+  ## Get a key represented as either Candid `nat32` or `nat`.
+  ##
+  ## Storage APIs commonly use a fixed-width uint32 key, while older callers
+  ## may still send an unbounded `nat`.  Accept both forms explicitly instead
+  ## of relying on an assertion that would trap the canister without context.
+  case self.values[index].kind
+  of ctNat32:
+    result = self.values[index].nat32Val
+  of ctNat:
+    if self.values[index].natVal > uint(high(uint32)):
+      raise newException(ValueError, "nat key exceeds uint32 range")
+    result = uint32(self.values[index].natVal)
+  else:
+    raise newException(ValueError,
+      "Expected nat32 or nat key, got: " & $self.values[index].kind)
+
 
 proc getNat64*(self:Request, index:int): uint64 =
   ## Get the argument at the specified index as a nat64

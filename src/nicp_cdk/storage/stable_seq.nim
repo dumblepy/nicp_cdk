@@ -1,181 +1,182 @@
+## Stable-memory-native sequence.
+##
+## Only the fixed-size header is loaded when the sequence is opened. Element
+## offsets are deliberately not cached on the heap; operations locate entries
+## directly in stable memory.
+
 import std/endians
 
-import ./serialization
-import ./stable_memory
+import ./libs/serialization
+import ./libs/memory_view
+
+export memory_view
 
 const
   SeqMagic = [byte('S'), byte('S'), byte('E'), byte('Q')]
-  SeqVersion = 1'u32
+  SeqVersion = 2'u32
   SeqHeaderSize = 32'u64
+  CopyBufferSize = 4096'u64
 
 type IcStableSeq*[T] = object
-  baseOffset: uint64
+  memory: StableMemoryView
   length: uint64
   dataEnd: uint64
-  offsets: seq[uint64]
-  lengths: seq[uint32]
 
-proc dataStart(s: IcStableSeq): uint64 =
-  s.baseOffset + SeqHeaderSize
+proc dataStart[T](s: IcStableSeq[T]): uint64 = SeqHeaderSize
 
 proc writeHeader[T](s: IcStableSeq[T]) =
   var header = newSeq[byte](int(SeqHeaderSize))
-  header[0] = SeqMagic[0]
-  header[1] = SeqMagic[1]
-  header[2] = SeqMagic[2]
-  header[3] = SeqMagic[3]
-  var offset = 4
+  for index in 0 .. 3: header[index] = SeqMagic[index]
   var version = SeqVersion
-  littleEndian32(addr header[offset], addr version)
-  offset += 4
   var length = s.length
-  littleEndian64(addr header[offset], addr length)
-  offset += 8
   var dataEnd = s.dataEnd
-  littleEndian64(addr header[offset], addr dataEnd)
-  stableWrite(s.baseOffset, header)
+  littleEndian32(addr header[4], addr version)
+  littleEndian64(addr header[8], addr length)
+  littleEndian64(addr header[16], addr dataEnd)
+  s.memory.write(0, header)
 
 proc readHeader[T](s: var IcStableSeq[T]): bool =
-  if stableSizeBytes() < s.baseOffset + SeqHeaderSize:
+  if s.memory.size < SeqHeaderSize:
     return false
-  let header = stableRead(s.baseOffset, SeqHeaderSize)
-  if header.len < int(SeqHeaderSize):
-    return false
-  if header[0] != SeqMagic[0] or header[1] != SeqMagic[1] or
-     header[2] != SeqMagic[2] or header[3] != SeqMagic[3]:
-    return false
-  var offset = 4
-  let version = deserialize[uint32](header, offset)
+  let header = s.memory.read(0, SeqHeaderSize)
+  for index in 0 .. 3:
+    if header[index] != SeqMagic[index]:
+      return false
+  var version: uint32
+  littleEndian32(addr version, unsafeAddr header[4])
   if version != SeqVersion:
-    return false
-  s.length = deserialize[uint64](header, offset)
-  s.dataEnd = deserialize[uint64](header, offset)
-  let minStart = dataStart(s)
-  if s.dataEnd < minStart:
-    s.dataEnd = minStart
-  let maxEnd = stableSizeBytes()
-  if s.dataEnd > maxEnd:
-    s.dataEnd = maxEnd
+    raise newException(ValueError, "unsupported SSEQ layout version; migrate the sequence before opening it")
+  littleEndian64(addr s.length, unsafeAddr header[8])
+  littleEndian64(addr s.dataEnd, unsafeAddr header[16])
+  if s.dataEnd < s.dataStart or s.dataEnd > s.memory.size:
+    raise newException(ValueError, "invalid SSEQ metadata")
   result = true
 
-proc rebuildIndex[T](s: var IcStableSeq[T]) =
-  s.offsets.setLen(0)
-  s.lengths.setLen(0)
-  let minStart = dataStart(s)
-  var offset = minStart
-  let maxEnd = s.dataEnd
-  var count = 0'u64
-  while count < s.length and offset + 4'u64 <= maxEnd:
-    let lenBytes = stableRead(offset, 4)
-    var lenOffset = 0
-    let elemLen = deserialize[uint32](lenBytes, lenOffset)
-    let entrySize = 4'u64 + uint64(elemLen)
-    if offset + entrySize > maxEnd:
-      break
-    s.offsets.add(offset)
-    s.lengths.add(elemLen)
+proc readLength[T](s: IcStableSeq[T], offset: uint64): uint32 =
+  if offset > s.dataEnd or s.dataEnd - offset < 4'u64:
+    raise newException(ValueError, "invalid SSEQ element offset")
+  var bytes: array[4, byte]
+  s.memory.readInto(bytes, offset)
+  littleEndian32(addr result, addr bytes[0])
+
+proc entryAt[T](s: IcStableSeq[T], idx: int): (uint64, uint32) =
+  if idx < 0 or idx >= int(s.length):
+    raise newException(IndexDefect, "index out of bounds")
+  var offset = s.dataStart
+  for _ in 0 ..< idx:
+    let valueLen = s.readLength(offset)
+    let entrySize = 4'u64 + uint64(valueLen)
+    if entrySize > s.dataEnd - offset:
+      raise newException(ValueError, "corrupt SSEQ element length")
     offset += entrySize
-    count += 1
-  s.length = count
-  s.dataEnd = offset
-  writeHeader(s)
+  let valueLen = s.readLength(offset)
+  if 4'u64 + uint64(valueLen) > s.dataEnd - offset:
+    raise newException(ValueError, "corrupt SSEQ element length")
+  (offset, valueLen)
+
+proc moveRange[T](s: IcStableSeq[T], source, destination, size: uint64) =
+  ## Move within stable memory with a bounded buffer. Copy backwards for an
+  ## expanding replacement so overlapping data is preserved.
+  if size == 0 or source == destination:
+    return
+  var buffer = newSeq[byte](int(min(CopyBufferSize, size)))
+  if destination > source:
+    var remaining = size
+    while remaining > 0:
+      let chunk = min(uint64(buffer.len), remaining)
+      let start = remaining - chunk
+      s.memory.readInto(buffer.toOpenArray(0, int(chunk) - 1), source + start)
+      s.memory.write(destination + start, buffer.toOpenArray(0, int(chunk) - 1))
+      remaining = start
+  else:
+    var moved = 0'u64
+    while moved < size:
+      let chunk = min(uint64(buffer.len), size - moved)
+      s.memory.readInto(buffer.toOpenArray(0, int(chunk) - 1), source + moved)
+      s.memory.write(destination + moved, buffer.toOpenArray(0, int(chunk) - 1))
+      moved += chunk
+
+proc initIcStableSeq*[T](memory: StableMemoryView): IcStableSeq[T] =
+  result.memory = memory
+  if not result.readHeader:
+    result.length = 0
+    result.dataEnd = result.dataStart
+    result.writeHeader
 
 proc initIcStableSeq*[T](baseOffset: uint64 = 0): IcStableSeq[T] =
-  result.baseOffset = baseOffset
-  if not readHeader(result):
-    result.length = 0
-    result.dataEnd = dataStart(result)
-    writeHeader(result)
-  rebuildIndex(result)
+  ## Compatibility overload for a raw stable-memory region.
+  initIcStableSeq[T](initRawMemoryView(baseOffset))
 
-proc len*[T](s: IcStableSeq[T]): int =
-  int(s.length)
+proc len*[T](s: IcStableSeq[T]): int = int(s.length)
 
 proc clear*[T](s: var IcStableSeq[T]) =
   s.length = 0
-  s.dataEnd = dataStart(s)
-  s.offsets.setLen(0)
-  s.lengths.setLen(0)
-  writeHeader(s)
+  s.dataEnd = s.dataStart
+  s.writeHeader
 
 proc `[]`*[T](s: IcStableSeq[T], idx: int): T =
-  if idx < 0 or idx >= int(s.length):
-    raise newException(IndexDefect, "index out of bounds")
-  let entryOffset = s.offsets[idx]
-  let elemLen = s.lengths[idx]
-  let valueOffset = entryOffset + 4'u64
-  let valueBytes = stableRead(valueOffset, uint64(elemLen))
+  let (entryOffset, valueLen) = s.entryAt(idx)
+  let valueBytes = s.memory.read(entryOffset + 4'u64, uint64(valueLen))
   var valuePos = 0
-  result = deserialize[T](valueBytes, valuePos)
+  deserialize[T](valueBytes, valuePos)
 
 proc `[]=`*[T](s: var IcStableSeq[T], idx: int, value: T) =
-  if idx < 0 or idx >= int(s.length):
-    raise newException(IndexDefect, "index out of bounds")
+  let (entryOffset, oldLen) = s.entryAt(idx)
   let valueBytes = serialize(value)
+  if uint64(valueBytes.len) > uint64(high(uint32)):
+    raise newException(ValueError, "SSEQ element is too large")
   let newLen = uint32(valueBytes.len)
-  let entryOffset = s.offsets[idx]
-  let oldLen = s.lengths[idx]
   let oldEntrySize = 4'u64 + uint64(oldLen)
   let newEntrySize = 4'u64 + uint64(newLen)
   let tailStart = entryOffset + oldEntrySize
   let tailSize = s.dataEnd - tailStart
-  var tailBytes: seq[byte] = @[]
-  if tailSize > 0:
-    tailBytes = stableRead(tailStart, tailSize)
-  let lenBytes = serialize(newLen)
-  stableWrite(entryOffset, lenBytes)
-  stableWrite(entryOffset + 4'u64, valueBytes)
   let newTailStart = entryOffset + newEntrySize
-  if tailSize > 0:
-    stableWrite(newTailStart, tailBytes)
-  let delta = int64(newEntrySize) - int64(oldEntrySize)
-  if delta != 0:
-    for i in (idx + 1) ..< s.offsets.len:
-      s.offsets[i] = uint64(int64(s.offsets[i]) + delta)
-  s.lengths[idx] = newLen
-  s.dataEnd = uint64(int64(s.dataEnd) + delta)
-  writeHeader(s)
+  s.moveRange(tailStart, newTailStart, tailSize)
+  var lenBytes: array[4, byte]
+  var serializedLen = newLen
+  littleEndian32(addr lenBytes[0], addr serializedLen)
+  s.memory.write(entryOffset, lenBytes)
+  s.memory.write(entryOffset + 4'u64, valueBytes)
+  s.dataEnd = newTailStart + tailSize
+  s.writeHeader
 
 proc add*[T](s: var IcStableSeq[T], value: T) =
   let valueBytes = serialize(value)
-  let valueLen = uint32(valueBytes.len)
-  let entryOffset = s.dataEnd
-  let lenBytes = serialize(valueLen)
-  stableWrite(entryOffset, lenBytes)
-  stableWrite(entryOffset + 4'u64, valueBytes)
-  s.offsets.add(entryOffset)
-  s.lengths.add(valueLen)
+  if uint64(valueBytes.len) > uint64(high(uint32)):
+    raise newException(ValueError, "SSEQ element is too large")
+  var lenBytes: array[4, byte]
+  var valueLen = uint32(valueBytes.len)
+  littleEndian32(addr lenBytes[0], addr valueLen)
+  s.memory.write(s.dataEnd, lenBytes)
+  s.memory.write(s.dataEnd + 4'u64, valueBytes)
   s.length += 1
-  s.dataEnd = entryOffset + 4'u64 + uint64(valueLen)
-  writeHeader(s)
+  s.dataEnd += 4'u64 + uint64(valueLen)
+  s.writeHeader
 
 proc delete*[T](s: var IcStableSeq[T], idx: int) =
-  if idx < 0 or idx >= int(s.length):
-    raise newException(IndexDefect, "index out of bounds")
-  let entryOffset = s.offsets[idx]
-  let elemLen = s.lengths[idx]
-  let entrySize = 4'u64 + uint64(elemLen)
+  let (entryOffset, valueLen) = s.entryAt(idx)
+  let entrySize = 4'u64 + uint64(valueLen)
   let tailStart = entryOffset + entrySize
   let tailSize = s.dataEnd - tailStart
-  if tailSize > 0:
-    let tailBytes = stableRead(tailStart, tailSize)
-    stableWrite(entryOffset, tailBytes)
-  let delta = -int64(entrySize)
-  for i in (idx + 1) ..< s.offsets.len:
-    s.offsets[i] = uint64(int64(s.offsets[i]) + delta)
-  s.offsets.delete(idx)
-  s.lengths.delete(idx)
+  s.moveRange(tailStart, entryOffset, tailSize)
   s.length -= 1
-  s.dataEnd = uint64(int64(s.dataEnd) + delta)
-  writeHeader(s)
+  s.dataEnd -= entrySize
+  s.writeHeader
 
 iterator items*[T](s: IcStableSeq[T]): T =
-  for idx in 0 ..< int(s.length):
-    yield s[idx]
+  var offset = s.dataStart
+  for _ in 0'u64 ..< s.length:
+    let valueLen = s.readLength(offset)
+    if 4'u64 + uint64(valueLen) > s.dataEnd - offset:
+      raise newException(ValueError, "corrupt SSEQ element length")
+    let valueBytes = s.memory.read(offset + 4'u64, uint64(valueLen))
+    var valuePos = 0
+    yield deserialize[T](valueBytes, valuePos)
+    offset += 4'u64 + uint64(valueLen)
 
 proc toSeq*[T](s: IcStableSeq[T]): seq[T] =
-  ## Collect all elements into a standard Nim seq
   result = newSeq[T](int(s.length))
-  for idx in 0 ..< int(s.length):
-    result[idx] = s[idx]
-  # `s[idx]` reads each entry, so this is O(n) with repeated stable reads
+  var index = 0
+  for value in s.items:
+    result[index] = value
+    inc index

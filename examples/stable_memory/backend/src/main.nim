@@ -1,8 +1,8 @@
-import std/tables
 import ../../../../src/nicp_cdk
 import ../../../../src/nicp_cdk/storage/stable_value
 import ../../../../src/nicp_cdk/storage/stable_seq
 import ../../../../src/nicp_cdk/storage/stable_table
+import ../../../../src/nicp_cdk/storage/stable_hash_map
 
 # Define base offsets for each storage structure to avoid collision
 const
@@ -16,8 +16,10 @@ const
   CharDbOffset = 700000'u64
   ByteDbOffset = 800000'u64
   SeqIntDbOffset = 900000'u64
-  TableDbOffset = 2000000'u64
-  ObjectDbOffset = 3000000'u64
+  BTreeDbOffset = 2000000'u64
+  BTreeDbLimit = 1000000'u64
+  HashDbOffset = 3000000'u64
+  HashDbLimit = 1000000'u64
 
 # ==================================================
 # int
@@ -202,82 +204,87 @@ proc seqInt_values() {.query.} =
   reply(seqIntDb.toSeq())
 
 # ==================================================
-# Table[principal, string]
+# IcStableHashMap[string, string]
 # ==================================================
-var tableDb = initIcStableTable[Principal, string](TableDbOffset)
+var hashDb = initIcStableHashMap[string, string](
+  initRawMemoryView(HashDbOffset, HashDbLimit)
+)
+
+proc hash_reset() {.update.} =
+  hashDb.clear()
+  reply()
+
+proc hash_set() {.update.} =
+  let request = Request.new()
+  hashDb[request.getStr(0)] = request.getStr(1)
+  reply()
+
+proc hash_get() {.query.} =
+  let request = Request.new()
+  reply(hashDb[request.getStr(0)])
+
+proc hash_hasKey() {.query.} =
+  let request = Request.new()
+  reply(hashDb.hasKey(request.getStr(0)))
+
+proc hash_len() {.query.} =
+  reply(uint(hashDb.len()))
+
+# ==================================================
+# IcStableTable[string, string] (B+Tree implementation)
+# ==================================================
+# This map keeps its searchable index in stable memory, while `range` shows
+# the key-order traversal provided by the B+Tree backend.
+type TableEntry = object
+  key: string
+  value: string
+
+var tableDb = initIcStableTable[string, string](
+  initRawMemoryView(BTreeDbOffset, BTreeDbLimit)
+)
 
 proc table_reset() {.update.} =
   tableDb.clear()
   reply()
 
 proc table_set() {.update.} =
-  let principal = Msg.caller()
-  let request = Request.new()
-  let message = request.getStr(0)
-  tableDb[principal] = message
-  reply()
+  try:
+    icEcho("table_set: begin")
+    let request = Request.new()
+    icEcho("table_set: request decoded")
+    let key = request.getStr(0)
+    let value = request.getStr(1)
+    icEcho("table_set: writing key=", key)
+    tableDb[key] = value
+    icEcho("table_set: write complete")
+    reply()
+    icEcho("table_set: reply sent")
+  except Exception as e:
+    ## The runtime reports uncaught Nim exceptions as a generic IC trap. Keep
+    ## the concrete reason in canister logs for malformed requests or a
+    ## corrupted/overlapping stable-memory region.
+    icEcho("table_set failed: ", e.msg)
+    raise
 
 proc table_get() {.query.} =
-  let principal = Msg.caller()
-  let value = tableDb[principal]
-  reply(value)
+  let request = Request.new()
+  let key = request.getStr(0)
+  reply(tableDb[key])
+
+proc table_hasKey() {.query.} =
+  let request = Request.new()
+  reply(tableDb.hasKey(request.getStr(0)))
 
 proc table_len() {.query.} =
   reply(uint(tableDb.len()))
 
-proc table_hasKey() {.query.} =
-  let principal = Msg.caller()
-  reply(tableDb.hasKey(principal))
-
-proc table_setFor() {.update.} =
+proc table_range() {.query.} =
+  ## Returns entries in ascending key order for the half-open interval
+  ## `[startKey, endKey)`.
   let request = Request.new()
-  let principal = request.getPrincipal(0)
-  let message = request.getStr(1)
-  tableDb[principal] = message
-  reply()
-
-proc table_getFor() {.query.} =
-  let request = Request.new()
-  let principal = request.getPrincipal(0)
-  let value = tableDb[principal]
-  reply(value)
-
-proc table_keys() {.query.} =
-  var keys: seq[Principal] = @[]
-  for key in tableDb.keys():
-    keys.add(key)
-  reply(keys)
-
-proc table_values() {.query.} =
-  var values: seq[string] = @[]
-  for value in tableDb.values():
-    values.add(value)
-  reply(values)
-
-# ==================================================
-# object
-# ==================================================
-type UserProfile = object
-  id: uint
-  name: string
-  active: bool
-
-var objectDb = initIcStableTable[Principal, UserProfile](ObjectDbOffset)
-
-proc object_set() {.update.} =
-  try:
-    let principal = Msg.caller()
-    let request = Request.new()
-    let id = request.getNat(0)
-    let name = request.getStr(1)
-    let active = request.getBool(2)
-    objectDb[principal] = UserProfile(id: id, name: name, active: active)
-    reply()
-  except Exception as e:
-    echo "Error: ", e.msg
-    reply(e.msg)
-
-proc object_get() {.query.} =
-  let principal = Msg.caller()
-  let value = objectDb[principal]
-  reply(value)
+  let startKey = request.getStr(0)
+  let endKey = request.getStr(1)
+  var entries: seq[TableEntry] = @[]
+  for key, value in tableDb.range(startKey, endKey):
+    entries.add(TableEntry(key: key, value: value))
+  reply(entries)

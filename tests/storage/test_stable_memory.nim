@@ -31,15 +31,28 @@ proc resolveExampleDir(): string =
 let
   EXAMPLE_DIR = resolveExampleDir()
 
+proc isQueryMethod(functionName: string): bool =
+  ## `icp canister call` defaults to an update call.  Keep the integration
+  ## test invocation aligned with the Candid/query annotations in the example.
+  case functionName
+  of "int_get", "uint_get", "string_get", "principal_get", "bool_get",
+     "float_get", "double_get", "char_get", "byte_get", "seqInt_get",
+     "seqInt_len", "seqInt_values", "hash_get", "hash_hasKey", "hash_len",
+     "table_get", "table_hasKey", "table_len", "table_range":
+    true
+  else:
+    false
+
 proc callCanisterFunction(functionName: string, args: string = ""): string =
   ensureIcpNetworkStarted(EXAMPLE_DIR)
   let currentDir = getCurrentDir()
   try:
     setCurrentDir(EXAMPLE_DIR)
+    let queryFlag = if isQueryMethod(functionName): " --query" else: ""
     let command = if args == "":
-      fmt"{ICP_PATH} canister call backend {functionName} '()'"
+      fmt"{ICP_PATH} canister call backend {functionName}{queryFlag} '()'"
     else:
-      fmt"{ICP_PATH} canister call backend {functionName} '{args}'"
+      fmt"{ICP_PATH} canister call backend {functionName}{queryFlag} '{args}'"
     return execProcess(command).strip()
   finally:
     setCurrentDir(currentDir)
@@ -57,6 +70,7 @@ proc deploy() =
     setCurrentDir(EXAMPLE_DIR)
     let result = execProcess(fmt"{ICP_PATH} deploy -y")
     echo "Deploy output: ", result
+    check result.contains("Building canisters:")
     check result.contains("Deployed") or result.contains("Installing") or result.contains("Creating")
   finally:
     setCurrentDir(currentDir)
@@ -85,6 +99,7 @@ proc resetAllDatabases() =
   discard callCanisterFunction("char_set", "(0)")
   discard callCanisterFunction("byte_set", "(0)")
   discard callCanisterFunction("seqInt_reset")
+  discard callCanisterFunction("hash_reset")
   discard callCanisterFunction("table_reset")
 
 suite "stable memory backend tests":
@@ -166,67 +181,71 @@ suite "stable memory backend tests":
     check values.contains("25")
     check values.contains("30")
 
-  test "Table[principal, string]":
-    discard callCanisterFunction("table_reset")
-    discard callCanisterFunction("table_set", "(\"Hello ICP\")")
-    var value = callCanisterFunction("table_get")
-    check value == "(\"Hello ICP\")"
+  test "IcStableSeq[int]":
+    discard callCanisterFunction("seqInt_reset")
+    discard callCanisterFunction("seqInt_set", "(10)")
+    discard callCanisterFunction("seqInt_set", "(20)")
+    discard callCanisterFunction("seqInt_setAt", "(0, 15)")
+    discard callCanisterFunction("seqInt_delete", "(1)")
+    check callCanisterFunction("seqInt_len") == "(1 : nat)"
+    check callCanisterFunction("seqInt_get", "(0)") == "(15 : int)"
 
-    discard callCanisterFunction("table_set", "(\"Hello ICP2\")")
-    value = callCanisterFunction("table_get")
-    check value == "(\"Hello ICP2\")"
+  test "IcStableHashMap[string, string]":
+    discard callCanisterFunction("hash_reset")
+    check callCanisterFunction("hash_len") == "(0 : nat)"
+    check callCanisterFunction("hash_hasKey", "(\"one\")") == "(false)"
 
-  test "Table[principal, string] 2":
+    discard callCanisterFunction("hash_set", "(\"one\", \"first\")")
+    discard callCanisterFunction("hash_set", "(\"two\", \"second\")")
+    check callCanisterFunction("hash_len") == "(2 : nat)"
+    check callCanisterFunction("hash_get", "(\"two\")") == "(\"second\")"
+
+    ## Updating an existing key must not change the live-entry count.
+    discard callCanisterFunction("hash_set", "(\"one\", \"updated\")")
+    check callCanisterFunction("hash_len") == "(2 : nat)"
+    check callCanisterFunction("hash_get", "(\"one\")") == "(\"updated\")"
+    check callCanisterFunction("hash_hasKey", "(\"two\")") == "(true)"
+
+  test "IcStableTable[string, string]":
     discard callCanisterFunction("table_reset")
     check callCanisterFunction("table_len") == "(0 : nat)"
-    check callCanisterFunction("table_hasKey") == "(false)"
-    discard callCanisterFunction("table_setFor", "(principal \"aaaaa-aa\", \"root\")")
-    discard callCanisterFunction("table_setFor", "(principal \"2vxsx-fae\", \"anon\")")
-    check callCanisterFunction("table_len") == "(2 : nat)"
-    var value = callCanisterFunction("table_getFor", "(principal \"aaaaa-aa\")")
-    check value == "(\"root\")"
-    value = callCanisterFunction("table_getFor", "(principal \"2vxsx-fae\")")
-    check value == "(\"anon\")"
-    discard callCanisterFunction("table_setFor", "(principal \"aaaaa-aa\", \"root2\")")
-    check callCanisterFunction("table_len") == "(2 : nat)"
-    value = callCanisterFunction("table_getFor", "(principal \"aaaaa-aa\")")
-    check value == "(\"root2\")"
-    let keys = callCanisterFunction("table_keys")
-    check keys.contains("aaaaa-aa")
-    check keys.contains("2vxsx-fae")
-    let values = callCanisterFunction("table_values")
-    check values.contains("\"root2\"")
-    check values.contains("\"anon\"")
+    check callCanisterFunction("table_hasKey", "(\"one\")") == "(false)"
 
-  test "object":
-    discard callCanisterFunction("object_set", "(1, \"Alice\", true)")
-    var value = callCanisterFunction("object_get")
-    check value.len > 0
-    check not value.startsWith("Error:")
+    discard callCanisterFunction("table_set", "(\"two\", \"second\")")
+    discard callCanisterFunction("table_set", "(\"one\", \"first\")")
+    check callCanisterFunction("table_len") == "(2 : nat)"
+    check callCanisterFunction("table_get", "(\"one\")") == "(\"first\")"
 
-    discard callCanisterFunction("object_set", "(2, \"Bob\", false)")
-    value = callCanisterFunction("object_get")
-    check value.len > 0
-    check not value.startsWith("Error:")
+    ## Updating an existing key must not change the live-entry count.
+    discard callCanisterFunction("table_set", "(\"one\", \"updated\")")
+    check callCanisterFunction("table_len") == "(2 : nat)"
+    check callCanisterFunction("table_get", "(\"one\")") == "(\"updated\")"
+    check callCanisterFunction("table_hasKey", "(\"two\")") == "(true)"
+
+    let ranged = callCanisterFunction("table_range", "(\"a\", \"z\")")
+    check ranged.contains("key = \"one\"")
+    check ranged.contains("value = \"updated\"")
+    check ranged.contains("key = \"two\"")
+    check ranged.contains("value = \"second\"")
+    check ranged.find("key = \"one\"") < ranged.find("key = \"two\"")
 
   test "upgrade preserves stable memory":
     # Clear all databases and re-initialize to ensure clean state
     resetAllDatabases()
     discard callCanisterFunction("seqInt_reset")
-    discard callCanisterFunction("table_reset")
     
     # Set specific data before upgrade
     discard callCanisterFunction("seqInt_set", "(100)")
     discard callCanisterFunction("seqInt_set", "(200)")
-    discard callCanisterFunction("table_setFor", "(principal \"aaaaa-aa\", \"test_upgrade\")")
+    discard callCanisterFunction("table_set", "(\"upgrade\", \"test_upgrade\")")
 
     # Verify data is set before upgrade
     check callCanisterFunction("seqInt_len") == "(2 : nat)"
-    check callCanisterFunction("table_getFor", "(principal \"aaaaa-aa\")") == "(\"test_upgrade\")"
+    check callCanisterFunction("table_get", "(\"upgrade\")") == "(\"test_upgrade\")"
     
     upgrade()
 
     # The `icp` local upgrade path currently reinitializes state in this environment.
     # Keep a smoke call after upgrade so the upgraded canister is still exercised.
     discard callCanisterFunction("seqInt_len")
-    discard callCanisterFunction("table_getFor", "(principal \"aaaaa-aa\")")
+    discard callCanisterFunction("table_get", "(\"upgrade\")")

@@ -1,4 +1,7 @@
 discard """
+  # Testament executes the compiled binary for `action: run`; do not add
+  # Nim's `-r`, which would execute this integration test twice.
+  action: "run"
   cmd: "nim c --skipUserCfg $file"
 """
 # nim c -r --skipUserCfg tests/management_canister/test_ecdsa.nim
@@ -57,7 +60,7 @@ proc deployExample() =
     # runCommand(ICP_PATH & " generate internet_identity")
     # runCommand(ICP_PATH & " deploy t_ecdsa_frontend")
     # runCommand(ICP_PATH & " generate t_ecdsa_frontend")
-    runCommand(ICP_PATH & " deploy -y")
+    runCommand(ICP_PATH & " deploy backend -y")
   finally:
     setCurrentDir(originalDir)
 

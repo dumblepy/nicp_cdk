@@ -202,7 +202,7 @@ Store key-value pairs that persist across canister upgrades.
 ```nim
 import nicp_cdk/storage/stable_table
 
-# Create a stable table mapping strings to integers
+# Create a stable B+Tree mapping strings to integers
 var scoreTable = initIcStableTable[string, uint]()
 
 # Store a key-value pair
@@ -216,7 +216,7 @@ let aliceScore = scoreTable["alice"]
 if scoreTable.hasKey("alice"):
   echo "Alice has a score"
 
-# Get table size
+# Get map size
 let numPlayers = scoreTable.len()
 
 # Iterate over all pairs
@@ -230,9 +230,42 @@ scoreTable.clear()
 Supported key types: `string`, `Principal`, and other primitive types
 Supported value types: primitive types, Principal, and Nim objects
 
+#### Choosing between IcStableTable and IcStableHashMap
+
+Both are key-value stores persisted in stable memory, but they use different
+index structures. In most cases, choose `IcStableTable` when you need ordered
+iteration or range queries.
+
+| Type | Index | Best for | Ordered APIs |
+| --- | --- | --- | --- |
+| `IcStableTable[K, V]` | B+Tree | General-purpose KV storage, ordered iteration, and range queries | `pairs`, `lowerBound`, `range` |
+| `IcStableHashMap[K, V]` | Linear hashing | Exact-match workloads dominated by `get` and `hasKey` | None (`pairs` order is unspecified) |
+
+`IcStableHashMap` splits one bucket at a time as it grows, avoiding a full
+rehash in a single operation. It does not preserve key order, so use
+`IcStableTable` whenever you need range queries.
+
+```nim
+import nicp_cdk/storage/stable_hash_map
+
+# Persistent HashMap for exact-match lookups
+var sessionByToken = initIcStableHashMap[string, string]()
+sessionByToken["token-123"] = "alice"
+
+if sessionByToken.hasKey("token-123"):
+  echo sessionByToken["token-123"]
+
+for token, user in sessionByToken.pairs():
+  # Iteration order is unspecified.
+  echo token, ": ", user
+```
+
+When using multiple stable storage structures in one canister, assign each one
+a distinct, non-overlapping stable-memory region.
+
 ### Example: Storing Custom Objects
 
-You can also store custom Nim objects in a stable table:
+You can also store custom Nim objects in a stable B+Tree:
 
 ```nim
 import nicp_cdk
@@ -243,7 +276,7 @@ type UserProfile = object
   name: string
   active: bool
 
-# Create a stable table mapping principals to user profiles
+# Create a stable B+Tree mapping principals to user profiles
 var userTable = initIcStableTable[Principal, UserProfile]()
 
 # Store a user profile

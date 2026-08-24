@@ -1,7 +1,7 @@
 import std/endians
 
-import ./serialization as stable_ser
-import ./stable_memory
+import ./libs/serialization as stable_ser
+import ./libs/stable_memory
 import ../ic_types/ic_principal
 
 const
