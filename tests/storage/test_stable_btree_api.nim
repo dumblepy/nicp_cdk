@@ -1,6 +1,8 @@
 discard """
-  cmd: "nim check --skipUserCfg $file"
+  cmd: "nim c --skipUserCfg $file"
 """
+
+# nim c -r --skipUserCfg tests/storage/test_stable_btree_api.nim
 
 ## Compile-time coverage for the public generic API.  Runtime/reopen coverage
 ## runs in the canister test environment because stable64 is an ic0 import.

@@ -1,6 +1,8 @@
 discard """
-  cmd: "nim check --skipUserCfg $file"
+  cmd: "nim c --skipUserCfg $file"
 """
+
+# nim c -r --skipUserCfg tests/storage/test_memory_manager_api.nim
 
 import ../../src/nicp_cdk/storage/memory_manager
 import ../../src/nicp_cdk/storage/stable_btree

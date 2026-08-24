@@ -1,4 +1,9 @@
-discard """cmd: "nim c -r --skipUserCfg $file"""
+discard """
+  cmd: "nim c -r --skipUserCfg $file"
+"""
+
+# nim c -r --skipUserCfg tests/storage/test_linear_hashing.nim
+
 import std/unittest
 import ../../src/nicp_cdk/storage/linear_hashing
 suite "linear hashing":

@@ -1,6 +1,12 @@
-discard """cmd: "nim c -r --skipUserCfg $file"""
+discard """
+  cmd: "nim c -r --skipUserCfg $file"
+"""
+
+# nim c -r --skipUserCfg tests/storage/test_stable_hash.nim
+
 import std/unittest
 import ../../src/nicp_cdk/storage/stable_hash
+
 suite "stable hash":
   test "matches the SipHash-2-4 reference vector":
     let seed = StableHashSeed(k0: 0x0706050403020100'u64,
