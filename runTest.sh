@@ -29,4 +29,8 @@ forge install
 cd /application/solidity/script/Counter
 ./deployCounter.sh
 cd /application
-nimble test
+# Run Testament directly instead of through the Nimble task wrapper.  A failed
+# test command exits this script immediately because of `set -e`, so the
+# container and GitHub Actions job receive Testament's non-zero status.
+testament p "tests/test_*.nim"
+testament p "tests/**/test_*.nim"

@@ -49,5 +49,6 @@ jobs:
 
       - name: Run tests
         run: |
+          set -euo pipefail
           docker compose up -d --wait --wait-timeout 60
-          docker compose run --rm app ./runTest.sh
+          docker compose run --rm --no-TTY app ./runTest.sh

@@ -40,6 +40,7 @@ Draft 0.1 \| 2026-08-20
 - [x] `IcStableSeq` を SSEQ v2 に更新し、起動時の heap offset index 再構築を廃止した。ヘッダーのみを open し、可変長要素の更新・削除は bounded buffer で stable memory 上を直接移動する。
 - [x] `examples/stable_memory/backend` に `IcStableTable`、`IcStableHashMap`、`IcStableSeq` の canister API と統合テストを追加し、旧 `src/stable_memory_backend` を削除した。
 - [x] stable-memory example の参照 API を Candid と同じ query として公開し、統合テストでは `icp canister call --query` を自動選択した。更新 API は update のままとし、最新 `icp` CLI の `icp.yaml` / `canister.yaml` build step が `ICP_WASM_OUTPUT_PATH` に出力する成果物を `icp deploy` で直接 build・install するようにした。旧 `dfx.json` は削除した。
+- [x] `test_ecdsa` の Testament action を明示的に `run` とし、`runTest.sh` は Testament を直接実行して失敗時に即時終了するようにした。GitHub Actions は compose の TTY を無効化し、コンテナの非 0 exit code を job に伝播するようにした。
 
 本設計の目的は、NICP の stable memory 上に「検索可能な index 自体」を永続化し、canister 起動・アップグレード後に全件を heap へ復元しなくても利用できる key-value storage を実装することである。対象は主に現行 IcStableTable の置き換えであり、既存の Nim らしい API は可能な限り維持する。
 

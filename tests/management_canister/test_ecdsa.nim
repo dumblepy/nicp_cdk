@@ -1,4 +1,7 @@
 discard """
+  # Testament executes the compiled binary for `action: run`; do not add
+  # Nim's `-r`, which would execute this integration test twice.
+  action: "run"
   cmd: "nim c --skipUserCfg $file"
 """
 # nim c -r --skipUserCfg tests/management_canister/test_ecdsa.nim
