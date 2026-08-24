@@ -60,7 +60,7 @@ proc deployExample() =
     # runCommand(ICP_PATH & " generate internet_identity")
     # runCommand(ICP_PATH & " deploy t_ecdsa_frontend")
     # runCommand(ICP_PATH & " generate t_ecdsa_frontend")
-    runCommand(ICP_PATH & " deploy -y")
+    runCommand(ICP_PATH & " deploy backend -y")
   finally:
     setCurrentDir(originalDir)
 
