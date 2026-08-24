@@ -7,7 +7,7 @@ import ./serialization
 import ./memory_view
 import ./stable_allocator
 import ./stable_key_codec
-import ../ic_types/ic_principal
+import ../../ic_types/ic_principal
 
 const
   BTreeMagic = [byte('S'), byte('B'), byte('T'), byte('2')]

@@ -1,7 +1,7 @@
 import std/endians
 import std/tables
 import std/typetraits
-import ../ic_types/ic_principal
+import ../../ic_types/ic_principal
 
 proc serialize*(value: uint8): seq[byte] =
   result = @[byte(value)]

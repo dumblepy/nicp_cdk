@@ -4,7 +4,7 @@ discard """
 
 import std/unittest
 import std/tables
-import ../../src/nicp_cdk/storage/memory_view
+import ../../src/nicp_cdk/storage/libs/memory_view
 import ../../src/nicp_cdk/storage/stable_hash_map
 
 type InMemoryStable = ref object

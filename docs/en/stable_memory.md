@@ -14,7 +14,7 @@ types built on top of stable memory:
 - `IcStableTable[K, V]` for an ordered key-value store
 
 All values are serialized with the custom format in
-`src/nicp_cdk/storage/serialization.nim`.
+`src/nicp_cdk/storage/libs/serialization.nim`.
 
 ## Usage
 
@@ -44,7 +44,7 @@ let length = items.len()
 ### IcStableTable
 
 ```nim
-import nicp_cdk/storage/stable_btree
+import nicp_cdk/storage/stable_table
 
 var table = initIcStableTable[string, uint64]()
 table["alice"] = 100

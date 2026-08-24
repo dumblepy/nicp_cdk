@@ -36,6 +36,7 @@ Draft 0.1 \| 2026-08-20
 - [x] Phase 5: exact-match workload benchmark を `benchmarks/storage/stable_exact_lookup.nim` に追加。in-memory backend・cacheSlots=0 の結果では、1k entries は HashMap が優位（1 ms / 1.20 MB vs 4 ms / 3.12 MB）だが、10k entries は B+Tree が優位（54 ms / 41.62 MB vs 63 ms / 57.60 MB）だった。順序 API と大規模時の read byte を考慮し、`IcStableTable` の既定は B+Tree のままとする。
 - [x] `IcStableTable` の互換 facade・旧 STBL migration・サンプルの `table_*`/`object_*` API を削除し、公開・サンプル・統合テストを `IcStableBTreeMap` に統一した。
 - [x] B+Tree 実装の公開型・初期化 API を `IcStableTable` / `initIcStableTable` に改名した。
+- [x] `IcStableValue`、`IcStableSeq`、`IcStableTable`（および `IcStableHashMap`）の公開モジュールを `storage/` 直下に集約し、B+Tree・allocator・codec・memory view・serialization などの内部実装を `storage/libs/` に移動した。
 
 本設計の目的は、NICP の stable memory 上に「検索可能な index 自体」を永続化し、canister 起動・アップグレード後に全件を heap へ復元しなくても利用できる key-value storage を実装することである。対象は主に現行 IcStableTable の置き換えであり、既存の Nim らしい API は可能な限り維持する。
 

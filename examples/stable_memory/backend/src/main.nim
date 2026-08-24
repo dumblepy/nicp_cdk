@@ -1,8 +1,7 @@
 import ../../../../src/nicp_cdk
 import ../../../../src/nicp_cdk/storage/stable_value
 import ../../../../src/nicp_cdk/storage/stable_seq
-import ../../../../src/nicp_cdk/storage/stable_btree
-import ../../../../src/nicp_cdk/storage/memory_view
+import ../../../../src/nicp_cdk/storage/stable_table
 
 # Define base offsets for each storage structure to avoid collision
 const

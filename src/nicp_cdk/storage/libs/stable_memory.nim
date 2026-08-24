@@ -1,4 +1,4 @@
-import ../ic0/ic0
+import ../../ic0/ic0
 
 const StablePageSize* = 65536'u64
 

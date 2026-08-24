@@ -5,10 +5,10 @@
 ## fixed-size header, independent of the number of buckets or entries.
 
 import std/endians
-import ./serialization
-import ./memory_view
-import ./linear_hashing
-import ./stable_hash
+import ./libs/serialization
+import ./libs/memory_view
+import ./libs/linear_hashing
+import ./libs/stable_hash
 
 const
   HashMapMagic = [byte('S'), byte('H'), byte('M'), byte('2')]

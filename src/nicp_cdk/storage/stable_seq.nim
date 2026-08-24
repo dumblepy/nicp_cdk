@@ -1,7 +1,7 @@
 import std/endians
 
-import ./serialization
-import ./stable_memory
+import ./libs/serialization
+import ./libs/stable_memory
 
 const
   SeqMagic = [byte('S'), byte('S'), byte('E'), byte('Q')]

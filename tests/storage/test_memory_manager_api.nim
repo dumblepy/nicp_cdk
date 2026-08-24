@@ -4,8 +4,8 @@ discard """
 
 # nim c -r --skipUserCfg tests/storage/test_memory_manager_api.nim
 
-import ../../src/nicp_cdk/storage/memory_manager
-import ../../src/nicp_cdk/storage/stable_btree
+import ../../src/nicp_cdk/storage/libs/memory_manager
+import ../../src/nicp_cdk/storage/stable_table
 
 proc apiShape() =
   let manager = initMemoryManager(0)

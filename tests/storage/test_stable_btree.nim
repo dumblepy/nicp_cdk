@@ -5,9 +5,9 @@ discard """
 import std/unittest
 import std/options
 import std/tables
-import ../../src/nicp_cdk/storage/memory_view
-import ../../src/nicp_cdk/storage/stable_btree
-import ../../src/nicp_cdk/storage/stable_key_codec
+import ../../src/nicp_cdk/storage/stable_table
+import ../../src/nicp_cdk/storage/libs/memory_view
+import ../../src/nicp_cdk/storage/libs/stable_key_codec
 
 type InMemoryStable = ref object
   data: seq[byte]

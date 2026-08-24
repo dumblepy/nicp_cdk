@@ -9,8 +9,8 @@
 ## canister has to perform for the workload.
 
 import std/[monotimes, strformat, os, times, strutils]
-import ../../src/nicp_cdk/storage/memory_view
-import ../../src/nicp_cdk/storage/stable_btree
+import ../../src/nicp_cdk/storage/libs/memory_view
+import ../../src/nicp_cdk/storage/stable_table
 import ../../src/nicp_cdk/storage/stable_hash_map
 
 type InMemoryStable = ref object

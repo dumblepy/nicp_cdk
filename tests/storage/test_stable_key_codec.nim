@@ -3,7 +3,7 @@ discard """
 """
 
 import std/unittest
-import ../../src/nicp_cdk/storage/stable_key_codec
+import ../../src/nicp_cdk/storage/libs/stable_key_codec
 
 proc compareBytes(a, b: openArray[byte]): int =
   for i in 0 ..< min(a.len, b.len):

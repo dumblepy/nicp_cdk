@@ -1,6 +1,6 @@
 ## Ordered, versioned encodings for keys used by IcStableTable.
 
-import ../ic_types/ic_principal
+import ../../ic_types/ic_principal
 
 const
   StringKeyCodecId* = 1'u32

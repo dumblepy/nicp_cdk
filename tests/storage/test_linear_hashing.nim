@@ -5,7 +5,7 @@ discard """
 # nim c -r --skipUserCfg tests/storage/test_linear_hashing.nim
 
 import std/unittest
-import ../../src/nicp_cdk/storage/linear_hashing
+import ../../src/nicp_cdk/storage/libs/linear_hashing
 suite "linear hashing":
   test "one bucket is split at a time":
     var state = LinearHashState(level: 1, split: 0)

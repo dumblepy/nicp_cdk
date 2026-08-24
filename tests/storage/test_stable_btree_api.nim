@@ -6,8 +6,7 @@ discard """
 
 ## Compile-time coverage for the public generic API.  Runtime/reopen coverage
 ## runs in the canister test environment because stable64 is an ic0 import.
-import ../../src/nicp_cdk/storage/stable_btree
-import ../../src/nicp_cdk/storage/memory_view
+import ../../src/nicp_cdk/storage/stable_table
 
 proc apiShape() =
   var table = initIcStableTable[string, uint64]()

@@ -5,7 +5,7 @@ discard """
 # nim c -r --skipUserCfg tests/storage/test_stable_hash.nim
 
 import std/unittest
-import ../../src/nicp_cdk/storage/stable_hash
+import ../../src/nicp_cdk/storage/libs/stable_hash
 
 suite "stable hash":
   test "matches the SipHash-2-4 reference vector":
