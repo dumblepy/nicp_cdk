@@ -165,7 +165,7 @@ proc valueData[K, V](t: IcStableHashMap[K, V], address: uint64, entry: HashEntry
 
 proc writeEntry[K, V](t: var IcStableHashMap[K, V], next, hash: uint64,
                        key, value: openArray[byte]): uint64 =
-  if key.len > int(high(uint32)) or value.len > int(high(uint32)):
+  if uint64(key.len) > uint64(high(uint32)) or uint64(value.len) > uint64(high(uint32)):
     raise newException(ValueError, "SHM2 key or value is too large")
   result = t.alloc(EntryHeaderSize + uint64(key.len) + uint64(value.len))
   var data = newSeq[byte](int(EntryHeaderSize) + key.len + value.len)
@@ -220,6 +220,8 @@ proc splitOnce[K, V](t: var IcStableHashMap[K, V]) =
   t.header.state.advanceSplit
 
 proc initialize[K, V](t: var IcStableHashMap[K, V]) =
+  if t.maxBucketLoad == 0:
+    t.maxBucketLoad = DefaultBucketLoad
   t.header = HashMapHeader(arenaEnd: HashMapHeaderSize,
                            state: LinearHashState(level: 1, split: 0))
   let directory = t.alloc(DirectoryPageSize)
@@ -253,6 +255,8 @@ proc `[]`*[K, V](t: IcStableHashMap[K, V], key: K): V =
   deserialize[V](t.valueData(found, entry), position)
 
 proc `[]=`*[K, V](t: var IcStableHashMap[K, V], key: K, value: V) =
+  if t.maxBucketLoad == 0:
+    raise newException(ValueError, "invalid SHM2 bucket load")
   let keyBytes = serialize(key); let valueBytes = serialize(value); let hash = sipHash24(t.seed, keyBytes)
   let (bucketAddress, previous, found) = t.findEntry(keyBytes, hash)
   if found != 0:

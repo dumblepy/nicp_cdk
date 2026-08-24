@@ -75,12 +75,17 @@ Header size: 32 bytes.
 
 ```
 0..3   magic "SSEQ"
-4..7   version (u32, little-endian)
+4..7   version 2 (u32, little-endian)
 8..15  length (u64, little-endian)
 16..23 data end offset (u64, little-endian)
 24..31 reserved
 32..   entries: [elemLen u32][elemBytes] ...
 ```
+
+`IcStableSeq` opens by reading only this header. It does not rebuild a heap
+array of element offsets; indexed operations locate records directly in stable
+memory, and variable-length updates or deletions move data with a bounded
+buffer.
 
 ### IcStableTable layout
 

@@ -2,6 +2,7 @@ import ../../../../src/nicp_cdk
 import ../../../../src/nicp_cdk/storage/stable_value
 import ../../../../src/nicp_cdk/storage/stable_seq
 import ../../../../src/nicp_cdk/storage/stable_table
+import ../../../../src/nicp_cdk/storage/stable_hash_map
 
 # Define base offsets for each storage structure to avoid collision
 const
@@ -17,6 +18,8 @@ const
   SeqIntDbOffset = 900000'u64
   BTreeDbOffset = 2000000'u64
   BTreeDbLimit = 1000000'u64
+  HashDbOffset = 3000000'u64
+  HashDbLimit = 1000000'u64
 
 # ==================================================
 # int
@@ -201,61 +204,87 @@ proc seqInt_values() {.query.} =
   reply(seqIntDb.toSeq())
 
 # ==================================================
+# IcStableHashMap[string, string]
+# ==================================================
+var hashDb = initIcStableHashMap[string, string](
+  initRawMemoryView(HashDbOffset, HashDbLimit)
+)
+
+proc hash_reset() {.update.} =
+  hashDb.clear()
+  reply()
+
+proc hash_set() {.update.} =
+  let request = Request.new()
+  hashDb[request.getStr(0)] = request.getStr(1)
+  reply()
+
+proc hash_get() {.query.} =
+  let request = Request.new()
+  reply(hashDb[request.getStr(0)])
+
+proc hash_hasKey() {.query.} =
+  let request = Request.new()
+  reply(hashDb.hasKey(request.getStr(0)))
+
+proc hash_len() {.query.} =
+  reply(uint(hashDb.len()))
+
+# ==================================================
 # IcStableTable[string, string] (B+Tree implementation)
 # ==================================================
-# This map keeps its searchable index in stable memory.  The bounded view
-# isolates it from the legacy stable values/tables above, while `range` shows
+# This map keeps its searchable index in stable memory, while `range` shows
 # the key-order traversal provided by the B+Tree backend.
-type BTreeEntry = object
+type TableEntry = object
   key: string
   value: string
 
-var btreeDb = initIcStableTable[string, string](
+var tableDb = initIcStableTable[string, string](
   initRawMemoryView(BTreeDbOffset, BTreeDbLimit)
 )
 
-proc btree_reset() {.update.} =
-  btreeDb.clear()
+proc table_reset() {.update.} =
+  tableDb.clear()
   reply()
 
-proc btree_set() {.update.} =
+proc table_set() {.update.} =
   try:
-    icEcho("btree_set: begin")
+    icEcho("table_set: begin")
     let request = Request.new()
-    icEcho("btree_set: request decoded")
+    icEcho("table_set: request decoded")
     let key = request.getStr(0)
     let value = request.getStr(1)
-    icEcho("btree_set: writing key=", key)
-    btreeDb[key] = value
-    icEcho("btree_set: write complete")
+    icEcho("table_set: writing key=", key)
+    tableDb[key] = value
+    icEcho("table_set: write complete")
     reply()
-    icEcho("btree_set: reply sent")
+    icEcho("table_set: reply sent")
   except Exception as e:
     ## The runtime reports uncaught Nim exceptions as a generic IC trap. Keep
     ## the concrete reason in canister logs for malformed requests or a
     ## corrupted/overlapping stable-memory region.
-    icEcho("btree_set failed: ", e.msg)
+    icEcho("table_set failed: ", e.msg)
     raise
 
-proc btree_get() {.query.} =
+proc table_get() {.query.} =
   let request = Request.new()
   let key = request.getStr(0)
-  reply(btreeDb[key])
+  reply(tableDb[key])
 
-proc btree_hasKey() {.query.} =
+proc table_hasKey() {.query.} =
   let request = Request.new()
-  reply(btreeDb.hasKey(request.getStr(0)))
+  reply(tableDb.hasKey(request.getStr(0)))
 
-proc btree_len() {.query.} =
-  reply(uint(btreeDb.len()))
+proc table_len() {.query.} =
+  reply(uint(tableDb.len()))
 
-proc btree_range() {.query.} =
+proc table_range() {.query.} =
   ## Returns entries in ascending key order for the half-open interval
   ## `[startKey, endKey)`.
   let request = Request.new()
   let startKey = request.getStr(0)
   let endKey = request.getStr(1)
-  var entries: seq[BTreeEntry] = @[]
-  for key, value in btreeDb.range(startKey, endKey):
-    entries.add(BTreeEntry(key: key, value: value))
+  var entries: seq[TableEntry] = @[]
+  for key, value in tableDb.range(startKey, endKey):
+    entries.add(TableEntry(key: key, value: value))
   reply(entries)

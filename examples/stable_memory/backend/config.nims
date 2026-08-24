@@ -8,6 +8,9 @@ import std/os
 --cc: "clang"
 --define: "useMalloc"
 
+switch("define", "wasi")
+switch("define", "rustcryptoWasi")
+
 # Enforce static linking for the WASI target to make it self-contained.
 switch("passC", "-target wasm32-wasi")
 switch("passL", "-target wasm32-wasi")
@@ -15,6 +18,9 @@ switch("passL", "-static")
 switch("passL", "-nostartfiles")
 switch("passL", "-Wl,--no-entry")
 switch("passC", "-fno-exceptions")
+
+# Rust crypto libraries may have multiple definitions of the same symbol.
+switch("passL", "-Wl,--allow-multiple-definition")
 
 when defined(release):
   switch("passC", "-Os")

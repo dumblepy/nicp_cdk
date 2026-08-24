@@ -1,6 +1,6 @@
 # Nim Backend
 
-This canister is built with `nicp developmentBuild` or `nicp dev` and deployed through `icp-cli`.
+This canister is built with `nicp build` or `nicp dev` and deployed through `icp-cli`.
 
 ## Overview
 

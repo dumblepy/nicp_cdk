@@ -238,7 +238,7 @@ create_nim_backend_project "arg_msg_reply" "$SRC/arg_msg_reply/src/arg_msg_reply
 create_nim_backend_project "counter" "$SRC/counter/src/counter_backend" "$SRC/counter/counter.did"
 create_motoko_project "dfx_hello" "$SRC/dfx_hello/src/dfx_hello_backend" 'service : { greet : (text) -> (text) query; };'
 create_nim_backend_project "ecdsa_args" "$SRC/ecdsa_args/src/ecdsa_args_backend" "$SRC/ecdsa_args/ecdsa_args.did"
-create_nim_backend_project "stable_memory" "$SRC/stable_memory/src/stable_memory_backend" "$SRC/stable_memory/stable_memory.did"
+create_nim_backend_project "stable_memory" "$SRC/stable_memory/backend" "$SRC/stable_memory/backend/backend.did"
 create_nim_backend_project "http_outcall/nim" "$SRC/http_outcall/nim/src/nim_backend" "$SRC/http_outcall/nim/nim.did"
 create_motoko_project "http_outcall/motoko" "$SRC/http_outcall/motoko/src/motoko_backend" 'service : { };'
 create_nim_backend_project "type_test/nim" "$SRC/type_test/nim/src/nim_backend" "$SRC/type_test/nim/nim.did"
