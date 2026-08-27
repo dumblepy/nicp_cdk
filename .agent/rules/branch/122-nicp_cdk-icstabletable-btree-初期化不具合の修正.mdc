@@ -1,0 +1,106 @@
+# nicp_cdk `IcStableTable` B+Tree 初期化不具合の修正設計
+
+## 背景
+
+`IcStableTable` を B+Tree 実装へ更新した backend canister で、最初の
+`create_wallet` が `alignment must be a power of two` で reject される。
+
+canister log により、入力検証・alias/address index 照会の後、
+`ensureOwnerProfile` が `ownerProfileDb` へ最初のレコードを保存する段階で
+失敗することを確認した。未使用の stable-memory 領域でも再現するため、既存
+stable-memory の破損や application input は原因ではない。
+
+## 原因
+
+`IcStableTable` の空 B+Tree に最初の値を代入する経路は、`newNode` から
+`StableAllocator.allocate` を呼ぶ。
+
+```text
+IcStableTable.[]=()
+  -> newNode()
+  -> alloc(size = nodeSize, alignment = nodeSize)
+  -> StableAllocator.allocate()
+```
+
+実行時には `alignment = 0` となる。従って、B+Tree instance の `nodeSize` が
+初回 insert 前に `DefaultNodeSize`（1024）へ初期化・復元されていない。
+
+## 修正方針
+
+### 1. superblock の node size を必ず検証する
+
+`initIcStableTable` は新規 table と既存 table のどちらでも、return 前に
+`nodeSize` が 256 以上かつ 2 のべき乗であることを検証する。
+
+- 新規 table: `nodeSize = DefaultNodeSize` を設定してから superblock を書き込む。
+- 既存 SBT2 table: superblock の node size を読み、同じ条件を検証する。
+- `0`、256 未満、2 のべき乗でない値: `ValueError("invalid SBT2 node size")` として
+  明示的に拒否する。allocator まで不正な値を渡さない。
+
+### 2. node 確保時にも防御的に検証する
+
+`newNode` の直前に node size の検証を置く。これは破損した header や将来の
+初期化回帰が発生しても、`alignment must be a power of two` という原因不明な
+エラーではなく、SBT2 layout の不正として失敗させるためである。
+
+```nim
+proc ensureValidNodeSize(nodeSize: uint32) =
+  if nodeSize < 256 or (nodeSize and (nodeSize - 1)) != 0:
+    raise newException(ValueError, "invalid SBT2 node size")
+```
+
+`initIcStableTable` の新規作成時、`readHeader` の既存読み込み時、`newNode` の
+3 箇所でこの検証を利用する。
+
+### 3. 永続フォーマットの扱い
+
+node size が 0 の SBT2 header は正常な table として扱わない。空であることを
+推測して自動 `clear` すると、破損した non-empty table を消去する危険がある。
+
+- 既存 SBT2 header が不正: init を失敗させ、運用者に restore または明示 migration
+  を要求する。
+- 新規 table: 正しい `DefaultNodeSize` を含む header を必ず書き込む。
+- STBL v1: 現行方針どおり明示 migration を要求し、暗黙変換しない。
+
+## 実装対象
+
+- `src/nicp_cdk/storage/libs/stable_btree.nim`
+  - node size validation helper の追加
+  - `initIcStableTable` の新規・既存 header 経路を修正
+  - `newNode` 前の防御検証を追加
+- `tests/storage/test_stable_btree.nim`
+  - 新規 table の初回 insert が成功するテスト
+  - reopen 後の初回/継続 insert が成功するテスト
+  - node size が 0 の superblock を注入した場合に `invalid SBT2 node size` で
+    失敗するテスト
+- stable-memory canister example
+  - `table_set` による空 table への初回書き込みを local IC で検証する。
+
+## 進捗
+
+- [x] SBT2 の node size を共通ヘルパーで検証し、新規作成・既存 header 読み込み・node 確保前に適用
+- [x] 新規 table の初回 insert、reopen 後の継続 insert、node size が 0 の superblock 拒否をユニットテスト化
+- [x] local IC で空 table に対する `table_set` の初回書き込みを確認
+- [x] 独自 object 型の value について、更新後も reopen をまたいで復元できることをテスト化
+
+## 検証結果
+
+- `nim c -r -d:nicpMemoryViewOnly --skipUserCfg tests/storage/test_stable_btree.nim`
+- `nim c -r -d:nicpMemoryViewOnly --skipUserCfg tests/storage/test_stable_btree_api.nim`
+- local IC: `table_reset` 後の `table_set("initial", "value")` が成功し、`table_get` は `("value")`、`table_len` は `(1 : nat)` を返却
+
+## 受け入れ条件
+
+1. 空の `IcStableTable` への最初の `[]=` が成功する。
+2. `nodeSize` が常に 256 以上の 2 のべき乗である。
+3. 不正な SBT2 superblock は allocator 呼び出し前に明示エラーになる。
+4. backend の `create_wallet` が `ensureOwnerProfile` を通過し、wallet と各 index を
+   保存できる。
+5. table 初期化は header と bounded cache のみを読み、全 key/value を heap に復元
+   しない。
+
+## 非対象
+
+- STBL v1 から SBT2 へのデータ migration 実装
+- B+Tree node size 以外の allocator/free-list 設計変更
+- application 側での空 table 自動 `clear` による回避

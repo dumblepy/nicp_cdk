@@ -10,8 +10,8 @@ import ./stable_key_codec
 import ../../ic_types/ic_principal
 
 const
-  BTreeMagic = [byte('S'), byte('B'), byte('T'), byte('2')]
-  BTreeVersion* = 3'u16
+  BTreeMagic = [byte('S'), byte('B'), byte('T')]
+  BTreeVersion* = 1'u16
   SuperblockSize = 256'u64
   DefaultNodeSize* = 1024'u32
   NodeHeaderSize = 48
@@ -61,6 +61,11 @@ proc get32(data: openArray[byte], at: int): uint32 =
   littleEndian32(addr result, unsafeAddr data[at])
 proc get64(data: openArray[byte], at: int): uint64 =
   littleEndian64(addr result, unsafeAddr data[at])
+
+proc ensureValidNodeSize(nodeSize: uint32) =
+  if nodeSize < 256 or (nodeSize and (nodeSize - 1)) != 0:
+    raise newException(ValueError, "invalid SBT node size")
+
 proc capacity(t: IcStableTable): int = (int(t.nodeSize) - NodeHeaderSize) div SlotSize
 
 proc encodeKey[K, V](t: IcStableTable[K, V], key: K): seq[byte] =
@@ -82,7 +87,7 @@ proc decodeKey[K, V](t: IcStableTable[K, V], data: openArray[byte]): K =
 
 proc writeHeader[K, V](t: IcStableTable[K, V]) =
   var b = newSeq[byte](int(SuperblockSize))
-  for i in 0 .. 3: b[i] = BTreeMagic[i]
+  for i in 0 .. 2: b[i] = BTreeMagic[i]
   b.put32(4, uint32(BTreeVersion)); b.put32(8, t.nodeSize)
   b.put32(12, t.keyCodecId); b.put32(16, t.valueCodecId)
   b.put64(24, t.header.count); b.put64(32, t.header.rootAddr)
@@ -93,23 +98,22 @@ proc writeHeader[K, V](t: IcStableTable[K, V]) =
 proc readHeader[K, V](t: var IcStableTable[K, V]): bool =
   if t.memory.size < SuperblockSize: return false
   let b = t.memory.read(0, SuperblockSize)
-  for i in 0 .. 3:
+  for i in 0 .. 2:
     if b[i] != BTreeMagic[i]: return false
   if b.get32(4) != uint32(BTreeVersion):
-    raise newException(ValueError, "unsupported SBT2 layout version")
+    raise newException(ValueError, "unsupported SBT layout version")
   t.nodeSize = b.get32(8)
-  if t.nodeSize < 256 or (t.nodeSize and (t.nodeSize - 1)) != 0:
-    raise newException(ValueError, "invalid SBT2 node size")
+  ensureValidNodeSize(t.nodeSize)
   let storedKeyCodecId = b.get32(12)
-  if storedKeyCodecId != t.keyCodecId: raise newException(ValueError, "SBT2 key codec mismatch")
+  if storedKeyCodecId != t.keyCodecId: raise newException(ValueError, "SBT key codec mismatch")
   let storedValueCodecId = b.get32(16)
-  if storedValueCodecId != t.valueCodecId: raise newException(ValueError, "SBT2 value codec mismatch")
+  if storedValueCodecId != t.valueCodecId: raise newException(ValueError, "SBT value codec mismatch")
   t.keyCodecId = storedKeyCodecId; t.valueCodecId = storedValueCodecId
   t.header.count = b.get64(24); t.header.rootAddr = b.get64(32)
   t.header.height = b.get32(40); t.header.firstLeaf = b.get64(48); t.header.lastLeaf = b.get64(56); t.header.blobFreeHead = b.get64(64)
   t.header.arenaEnd = b.get64(72)
   if t.header.arenaEnd < SuperblockSize or t.header.arenaEnd > t.memory.size:
-    raise newException(ValueError, "invalid SBT2 allocator metadata")
+    raise newException(ValueError, "invalid SBT allocator metadata")
   result = true
 
 proc readNode[K, V](t: IcStableTable[K, V], address: uint64): Node =
@@ -118,12 +122,12 @@ proc readNode[K, V](t: IcStableTable[K, V], address: uint64): Node =
     let cached = t.cache.entries[slot]
     if cached.valid and cached.address == address: return cached.node
   if address < SuperblockSize or address > t.memory.size - uint64(t.nodeSize):
-    raise newException(ValueError, "SBT2 node address out of bounds")
+    raise newException(ValueError, "SBT node address out of bounds")
   let b = t.memory.read(address, uint64(t.nodeSize))
   result.kind = b[0]
-  if result.kind != LeafNode and result.kind != InternalNode: raise newException(ValueError, "invalid SBT2 node type")
+  if result.kind != LeafNode and result.kind != InternalNode: raise newException(ValueError, "invalid SBT node type")
   let n = int(b.get32(4))
-  if n > t.capacity: raise newException(ValueError, "invalid SBT2 node slot count")
+  if n > t.capacity: raise newException(ValueError, "invalid SBT node slot count")
   result.prev = b.get64(8); result.next = b.get64(16); result.firstChild = b.get64(24)
   result.slots = newSeq[Slot](n)
   for i in 0 ..< n:
@@ -134,7 +138,7 @@ proc readNode[K, V](t: IcStableTable[K, V], address: uint64): Node =
     t.cache.entries[slot] = NodeCacheEntry(address: address, node: result, valid: true)
 
 proc writeNode[K, V](t: IcStableTable[K, V], address: uint64, node: Node) =
-  if node.slots.len > t.capacity: raise newException(ValueError, "SBT2 node overflow")
+  if node.slots.len > t.capacity: raise newException(ValueError, "SBT node overflow")
   var b = newSeq[byte](int(t.nodeSize)); b[0] = node.kind; b.put32(4, uint32(node.slots.len))
   b.put64(8, node.prev); b.put64(16, node.next); b.put64(24, node.firstChild)
   for i, s in node.slots:
@@ -150,7 +154,7 @@ proc alloc[K, V](t: var IcStableTable[K, V], size, alignment: uint64): uint64 =
   result = a.allocate(t.memory, size, alignment); t.header.arenaEnd = a.arenaEnd
 proc readBlobHeader[K, V](t: IcStableTable[K, V], address: uint64): (uint64, uint64) =
   if address < SuperblockSize or address > t.memory.size - 16'u64:
-    raise newException(ValueError, "SBT2 blob header out of bounds")
+    raise newException(ValueError, "SBT blob header out of bounds")
   let data = t.memory.read(address, 16)
   (data.get64(0), data.get64(8)) # payload capacity, next free header
 
@@ -180,13 +184,13 @@ proc writeBlob[K, V](t: var IcStableTable[K, V], data: openArray[byte]): uint64 
 
 proc freeBlob[K, V](t: var IcStableTable[K, V], payloadAddress: uint64) =
   if payloadAddress < SuperblockSize + 16'u64:
-    raise newException(ValueError, "invalid SBT2 blob address")
+    raise newException(ValueError, "invalid SBT blob address")
   let headerAddress = payloadAddress - 16'u64
   let (capacity, _) = t.readBlobHeader(headerAddress)
   t.writeBlobHeader(headerAddress, capacity, t.header.blobFreeHead)
   t.header.blobFreeHead = headerAddress
 proc readKey[K, V](t: IcStableTable[K, V], s: Slot): seq[byte] =
-  if s.keyOff > t.memory.size or uint64(s.keyLen) > t.memory.size - s.keyOff: raise newException(ValueError, "SBT2 key blob out of bounds")
+  if s.keyOff > t.memory.size or uint64(s.keyLen) > t.memory.size - s.keyOff: raise newException(ValueError, "SBT key blob out of bounds")
   t.memory.read(s.keyOff, uint64(s.keyLen))
 proc bytesCompare(a, b: openArray[byte]): int =
   for i in 0 ..< min(a.len, b.len):
@@ -207,6 +211,7 @@ proc childIndex[K, V](t: IcStableTable[K, V], n: Node, key: openArray[byte]): in
     if bytesCompare(t.readKey(n.slots[mid]), key) <= 0: lo = mid + 1 else: hi = mid
   lo
 proc newNode[K, V](t: var IcStableTable[K, V], kind: uint8): uint64 =
+  ensureValidNodeSize(t.nodeSize)
   result = t.alloc(uint64(t.nodeSize), uint64(t.nodeSize)); t.writeNode(result, Node(kind: kind))
 
 proc initIcStableTable*[K, V](memory: StableMemoryView, codec: StableKeyCodec[K], cacheSlots: int = 16,
@@ -215,8 +220,7 @@ proc initIcStableTable*[K, V](memory: StableMemoryView, codec: StableKeyCodec[K]
   if codec.id == 0 or codec.encode.isNil or codec.decode.isNil: raise newException(ValueError, "invalid StableKeyCodec")
   result.memory = memory; result.nodeSize = DefaultNodeSize; result.keyCodecId = codec.id; result.valueCodecId = valueCodecId; result.codec = codec
   if not result.readHeader:
-    if memory.size >= 4 and memory.read(0, 4) == @[byte('S'), byte('T'), byte('B'), byte('L')]:
-      raise newException(ValueError, "STBL v1 detected: explicit migration is required")
+    ensureValidNodeSize(result.nodeSize)
     result.header.arenaEnd = SuperblockSize
     result.writeHeader
   if cacheSlots > 0:
