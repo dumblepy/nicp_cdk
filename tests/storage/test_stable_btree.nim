@@ -14,6 +14,14 @@ type InMemoryStable = ref object
 type CompositeKey = object
   group: uint16
   id: uint16
+type UserProfile = object
+  id: uint64
+  displayName: string
+  active: bool
+type StoredProfile = object
+  profile: UserProfile
+  labels: seq[string]
+  revision: uint32
 
 proc compositeCodec(): StableKeyCodec[CompositeKey] =
   StableKeyCodec[CompositeKey](id: 1001'u32,
@@ -36,6 +44,51 @@ proc memoryView(memory: InMemoryStable): StableMemoryView =
   )
 
 suite "stable B+Tree":
+  test "first insert succeeds for a new table and after reopen":
+    let backing = InMemoryStable(data: @[])
+    var tree = initIcStableTable[uint32, string](backing.memoryView())
+    tree[1'u32] = "first"
+    check tree.len == 1
+    check tree[1'u32] == "first"
+
+    var reopened = initIcStableTable[uint32, string](backing.memoryView())
+    reopened[2'u32] = "second"
+    check reopened.len == 2
+    check reopened[1'u32] == "first"
+    check reopened[2'u32] == "second"
+
+  test "custom object values persist across updates and reopen":
+    let backing = InMemoryStable(data: @[])
+    let original = StoredProfile(
+      profile: UserProfile(id: 42'u64, displayName: "Alice", active: true),
+      labels: @["owner", "verified"], revision: 1'u32
+    )
+    var tree = initIcStableTable[uint32, StoredProfile](backing.memoryView())
+    tree[42'u32] = original
+    check tree[42'u32] == original
+
+    let updated = StoredProfile(
+      profile: UserProfile(id: 42'u64, displayName: "Alice Smith", active: false),
+      labels: @["owner"], revision: 2'u32
+    )
+    tree[42'u32] = updated
+    check tree.len == 1
+
+    var reopened = initIcStableTable[uint32, StoredProfile](backing.memoryView())
+    check reopened[42'u32] == updated
+
+  test "zero node size in an SBT superblock is rejected":
+    let backing = InMemoryStable(data: @[])
+    discard initIcStableTable[uint32, string](backing.memoryView())
+    for index in 8 .. 11:
+      backing.data[index] = 0
+
+    try:
+      discard initIcStableTable[uint32, string](backing.memoryView())
+      check false
+    except ValueError as error:
+      check error.msg == "invalid SBT node size"
+
   test "split, ordered iteration, update, and reopen":
     let backing = InMemoryStable(data: @[])
     var tree = initIcStableTable[uint32, string](backing.memoryView(), cacheSlots = 0)

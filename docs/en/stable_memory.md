@@ -89,12 +89,13 @@ buffer.
 
 ### IcStableTable layout
 
-The B+Tree persists an `SBT2` superblock, node pages, and key/value blobs.
+The B+Tree persists an `SBT` superblock, node pages, and key/value blobs.
 Initialization reads only the superblock and bounded cache metadata; it does
 not rebuild an in-memory index by scanning all entries.
 
 ```
-0..3   magic "SBT2"
+0..2   magic "SBT"
+3..    reserved
 4..    versioned superblock, root address, count, allocator metadata
 ...    fixed-size B+Tree node pages and variable key/value blobs
 ```

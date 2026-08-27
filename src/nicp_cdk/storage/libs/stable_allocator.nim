@@ -1,4 +1,4 @@
-## Persistent append allocator used by the first SBT2 layout.
+## Persistent append allocator used by the SBT layout.
 ## Free-list reuse is intentionally kept behind this module's API so the
 ## on-disk header can gain bins without changing tree code.
 
