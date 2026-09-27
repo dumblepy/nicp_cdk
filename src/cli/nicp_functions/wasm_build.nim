@@ -123,12 +123,18 @@ proc compileWasm*(release: bool, wasiTmp = "wasi.wasm"): int =
       stderr.writeLine(nimOut)
     return 1
 
-  let wasi2icCmd = "wasi2ic " & quoteShell(wasiTmp) & " main.wasm"
-  echo wasi2icCmd
-  let (w2iOut, w2iExit) = execCmdEx(wasi2icCmd)
-  if w2iExit != 0:
-    stderr.writeLine(w2iOut)
-    return w2iExit
+  if getEnv("NICP_SKIP_WASI2IC") == "1":
+    ## A canister with no WASI imports must not receive wasi2ic's stable
+    ## filesystem runtime: it owns stable memory and conflicts with apps that
+    ## deliberately manage stable memory themselves.
+    copyFile(wasiTmp, "main.wasm")
+  else:
+    let wasi2icCmd = "wasi2ic " & quoteShell(wasiTmp) & " main.wasm"
+    echo wasi2icCmd
+    let (w2iOut, w2iExit) = execCmdEx(wasi2icCmd)
+    if w2iExit != 0:
+      stderr.writeLine(w2iOut)
+      return w2iExit
 
   if fileExists(wasiTmp):
     removeFile(wasiTmp)

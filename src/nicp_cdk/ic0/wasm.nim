@@ -34,7 +34,8 @@ macro update*(p: untyped): untyped =
   result.addPragma(ident"exportc")
 
 
-{.emit: """
+when not defined(nicpDisableWasiPolyfill):
+  {.emit: """
 #include <stddef.h>
 
 #define __IMPORT(module, name) __attribute__((__import_module__(#module), __import_name__(#name)))
