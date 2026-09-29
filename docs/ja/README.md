@@ -58,8 +58,8 @@ config.nims
 --nimcache: "./dist"
 
 # WASI ターゲットだが、icpp-pro のように自己完結型にするために静的リンクを強制
-switch("passC", "-target wasm32-wasi")
-switch("passL", "-target wasm32-wasi")
+switch("passC", "-target wasm32-wasip1")
+switch("passL", "-target wasm32-wasip1")
 switch("passL", "-static") # 必要なライブラリ群を静的にリンクする
 switch("passL", "-nostartfiles") # 標準のスタートアップコードをリンクしない
 switch("passL", "-Wl,--no-entry") # エントリーポイント処理を行わない

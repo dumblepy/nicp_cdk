@@ -9,8 +9,8 @@ import std/os
 --define: "useMalloc"
 
 # Enforce static linking for the WASI target to make it self-contained, similar to icpp-pro
-switch("passC", "-target wasm32-wasi")
-switch("passL", "-target wasm32-wasi")
+switch("passC", "-target wasm32-wasip1")
+switch("passL", "-target wasm32-wasip1")
 switch("passL", "-static") # Statically link necessary libraries
 switch("passL", "-nostartfiles") # Do not link standard startup files
 switch("passL", "-Wl,--no-entry") # Do not enforce an entry point
