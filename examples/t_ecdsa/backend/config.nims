@@ -12,8 +12,8 @@ switch("define", "wasi")
 switch("define", "rustcryptoWasi")
 
 # Enforce static linking for the WASI target to make it self-contained.
-switch("passC", "-target wasm32-wasi")
-switch("passL", "-target wasm32-wasi")
+switch("passC", "-target wasm32-wasip1")
+switch("passL", "-target wasm32-wasip1")
 switch("passL", "-static")
 switch("passL", "-nostartfiles")
 switch("passL", "-Wl,--no-entry")

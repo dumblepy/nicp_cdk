@@ -80,7 +80,7 @@ RUN icp --version
 # reference: https://github.com/ICPorts-labs/chico/blob/main/examples/HelloWorld/Dockerfile#L48-L59
 # https://github.com/WebAssembly/wasi-sdk/releases/latest
 WORKDIR /root
-ENV WASI_VERSION="30"
+ENV WASI_VERSION="34"
 ENV WASI_VERSION_FULL="$WASI_VERSION.0"
 RUN curl -L -o wasi-sdk.tar.gz https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_VERSION}/wasi-sdk-${WASI_VERSION_FULL}-x86_64-linux.tar.gz
 RUN tar -xzf wasi-sdk.tar.gz

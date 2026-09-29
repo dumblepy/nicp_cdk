@@ -376,8 +376,8 @@ import std/os
 --define: "useMalloc"          # 標準mallocの使用
 
 # WASI向けターゲット設定
-switch("passC", "-target wasm32-wasi")
-switch("passL", "-target wasm32-wasi")
+switch("passC", "-target wasm32-wasip1")
+switch("passL", "-target wasm32-wasip1")
 switch("passL", "-static")           # 静的リンク
 switch("passL", "-nostartfiles")     # 標準スタートアップファイル無効
 switch("passL", "-Wl,--no-entry")    # エントリーポイント強制無効
