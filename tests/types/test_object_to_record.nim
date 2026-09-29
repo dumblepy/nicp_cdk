@@ -17,6 +17,16 @@ import ../../src/nicp_cdk/ic_types/candid_message/candid_decode
 
 
 suite("test_object_to_record"):
+  test("uint64 fields encode as Candid nat64"):
+    type Stats = object
+      stable_pages: uint64
+      stable_bytes: uint64
+    let encoded = encodeCandidMessage(@[newCandidRecord(Stats(
+      stable_pages: 3'u64, stable_bytes: 196_608'u64))])
+    let request = newMockRequest(decodeCandidMessage(encoded).values)
+    check request.getRecord(0)["stable_pages"].getNat64() == 3'u64
+    check request.getRecord(0)["stable_bytes"].getNat64() == 196_608'u64
+
   test("test_object_to_record"):
     type TestObject = object
       a: uint
