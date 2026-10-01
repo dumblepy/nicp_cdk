@@ -144,22 +144,73 @@ icp canister call backend greet '("Internet Computer")'
 
 ## Stable memory
 
-Stable memory allows you to persist data across canister upgrades. The NICP CDK provides three main types for managing persistent storage:
+Stable memory allows you to persist data across canister upgrades. The NICP CDK
+partitions stable memory with a single `MemoryManager` that uses the `MGR`
+layout shared with [`nim-ic-sqlite`](https://github.com/dumblepy/nim-ic-sqlite).
+The manager hands out one virtual memory per `MemoryId`, so each structure grows
+independently and application code never manages physical offsets.
+
+### MemoryManager and MemoryId
+
+A `MemoryId` is part of your application's stable schema. Valid ids are
+`0 .. 254`; `255` is reserved as the allocation-table free marker. A `MemoryId`
+is never assigned automatically.
+
+> Never reuse or change the meaning of a `MemoryId` after a deployment. A
+> different id opens a different (empty) region; a structure's own magic only
+> protects against a non-empty region.
+
+Keep the ids in one registry module so collisions are visible:
+
+```nim
+# storage_memory_ids.nim
+import nicp_cdk/storage/memory_manager
+
+const
+  UserTableMemoryId* = newMemoryId(32)
+  AuditLogMemoryId* = newMemoryId(33)
+  SqliteMemoryId* = newMemoryId(40)
+```
+
+### Lifecycle: fresh install vs. upgrade
+
+Use the strict entry points. `createMemoryManagerStrict` requires an empty
+backing store, and `openExistingMemoryManagerStrict` never writes on error and
+rejects a missing, foreign, or inconsistent `MGR` image.
+
+```nim
+import nicp_cdk/storage/memory_manager
+
+var manager: MemoryManager
+
+proc canisterInit() =
+  manager = createMemoryManagerStrict(newIcStableBackend())
+
+proc canisterPostUpgrade() =
+  manager = openExistingMemoryManagerStrict(newIcStableBackend())
+```
+
+Never fall back to create in `post_upgrade`. If your application needs one code
+path, use the explicit mode wrapper:
+
+```nim
+let manager = openStableMemoryManager(newIcStableBackend(), smCreate)
+let reopened = openStableMemoryManager(newIcStableBackend(), smOpenExisting)
+```
 
 ### IcStableValue - Single Value Storage
 
-Store a single value of a primitive type or Principal that persists across canister upgrades.
+Store a single value of a primitive type or Principal.
 
 ```nim
+import nicp_cdk/storage/memory_manager
 import nicp_cdk/storage/stable_value
 
-# Create a stable storage for an integer
-var intDb = initIcStableValue(int)
+const IntMemoryId = newMemoryId(32)
+let manager = createMemoryManagerStrict(newIcStableBackend())
 
-# Store a value
+var intDb = initStableValue[int](manager.getMemory(IntMemoryId))
 intDb.set(42)
-
-# Retrieve the value
 let value = intDb.get()
 ```
 
@@ -167,29 +218,22 @@ Supported types: `int`, `uint`, `int8`, `int16`, `int32`, `int64`, `uint8`, `uin
 
 ### IcStableSeq - Persistent Sequence
 
-Store a sequence (array) of elements that persists across canister upgrades.
+Store a sequence (array) of elements.
 
 ```nim
+import nicp_cdk/storage/memory_manager
 import nicp_cdk/storage/stable_seq
 
-# Create a stable sequence of integers
-var seqIntDb = initIcStableSeq[int]()
+const SeqMemoryId = newMemoryId(33)
+let manager = createMemoryManagerStrict(newIcStableBackend())
 
-# Add elements
+var seqIntDb = initIcStableSeq[int](manager.getMemory(SeqMemoryId))
 seqIntDb.add(1)
 seqIntDb.add(2)
 seqIntDb.add(3)
-
-# Access elements
 let firstElement = seqIntDb[0]
-
-# Get sequence length
 let length = seqIntDb.len()
-
-# Delete an element
 seqIntDb.delete(1)
-
-# Clear all elements
 seqIntDb.clear()
 ```
 
@@ -197,33 +241,24 @@ Supported element types: primitive types and Principal
 
 ### IcStableTable - Persistent Key-Value Store
 
-Store key-value pairs that persist across canister upgrades.
+Store key-value pairs in an ordered B+Tree.
 
 ```nim
+import nicp_cdk/storage/memory_manager
 import nicp_cdk/storage/stable_table
 
-# Create a stable B+Tree mapping strings to integers
-var scoreTable = initIcStableTable[string, uint]()
+const TableMemoryId = newMemoryId(34)
+let manager = createMemoryManagerStrict(newIcStableBackend())
 
-# Store a key-value pair
+var scoreTable = initIcStableTable[string, uint](manager.getMemory(TableMemoryId))
 scoreTable["alice"] = 100
 scoreTable["bob"] = 95
-
-# Retrieve a value
 let aliceScore = scoreTable["alice"]
-
-# Check if a key exists
 if scoreTable.hasKey("alice"):
   echo "Alice has a score"
-
-# Get map size
 let numPlayers = scoreTable.len()
-
-# Iterate over all pairs
 for key, value in scoreTable.pairs():
   echo key, ": ", value
-
-# Clear all entries
 scoreTable.clear()
 ```
 
@@ -246,22 +281,20 @@ rehash in a single operation. It does not preserve key order, so use
 `IcStableTable` whenever you need range queries.
 
 ```nim
+import nicp_cdk/storage/memory_manager
 import nicp_cdk/storage/stable_hash_map
 
-# Persistent HashMap for exact-match lookups
-var sessionByToken = initIcStableHashMap[string, string]()
-sessionByToken["token-123"] = "alice"
+const HashMemoryId = newMemoryId(35)
+let manager = createMemoryManagerStrict(newIcStableBackend())
 
+var sessionByToken = initIcStableHashMap[string, string](manager.getMemory(HashMemoryId))
+sessionByToken["token-123"] = "alice"
 if sessionByToken.hasKey("token-123"):
   echo sessionByToken["token-123"]
-
 for token, user in sessionByToken.pairs():
   # Iteration order is unspecified.
   echo token, ": ", user
 ```
-
-When using multiple stable storage structures in one canister, assign each one
-a distinct, non-overlapping stable-memory region.
 
 ### Example: Storing Custom Objects
 
@@ -269,6 +302,7 @@ You can also store custom Nim objects in a stable B+Tree:
 
 ```nim
 import nicp_cdk
+import nicp_cdk/storage/memory_manager
 import nicp_cdk/storage/stable_table
 
 type UserProfile = object
@@ -276,45 +310,55 @@ type UserProfile = object
   name: string
   active: bool
 
-# Create a stable B+Tree mapping principals to user profiles
-var userTable = initIcStableTable[Principal, UserProfile]()
+const UserTableMemoryId = newMemoryId(36)
+let manager = createMemoryManagerStrict(newIcStableBackend())
 
-# Store a user profile
+var userTable = initIcStableTable[Principal, UserProfile](manager.getMemory(UserTableMemoryId))
 let caller = Msg.caller()
 userTable[caller] = UserProfile(id: 1, name: "Alice", active: true)
-
-# Retrieve the user profile
 let profile = userTable[caller]
 echo profile.name  # Output: Alice
 ```
 
-### Integration with Canister Methods
+### One allocator authority per managed region
 
-Here's a practical example of using stable storage in canister update and query methods:
+A single `MGR` region must have exactly one allocator authority. Do not open two
+independent `MemoryManager` instances over the same raw stable memory: both
+would update the allocation table and corrupt each other's buckets.
+
+This matters for the WASI environment. The IC WASI polyfill, when linked,
+installs its own `MGR` region at physical offset 0 and grows stable memory to
+one header page plus eight 128-page buckets (= **1025 pages**) during
+instantiation. An application must place its manager after that prefix with the
+explicit helper:
 
 ```nim
-import nicp_cdk
-import nicp_cdk/storage/stable_value
+import nicp_cdk/storage/memory_manager
 
-var counterDb = initIcStableValue(uint64)
-
-proc increment() {.update.} =
-  let currentValue = counterDb.get()
-  counterDb.set(currentValue + 1)
-  reply(currentValue + 1)
-
-proc getCounter() {.query.} =
-  let value = counterDb.get()
-  reply(value)
+let backend = newIcOffsetBackend(newIcStableBackend())
+let manager =
+  if fresh: createMemoryManagerStrict(backend)
+  else: openExistingMemoryManagerStrict(backend)
 ```
+
+`newIcOffsetBackend` is an explicit partition, not an implicit "safe offset". It
+is tied to the IC layout, so re-verify it when the WASI polyfill version or
+build mode changes. A canister that does not link the polyfill can pass
+`newIcStableBackend()` directly. Never let the polyfill and the application each
+own an allocator over the same region.
 
 ### Memory Layout
 
 Stable memory is organized as follows:
-- **Header area**: Magic bytes, version, and metadata
-- **Data area**: Serialized key-value pairs or sequence elements
 
-When data needs to grow beyond available stable memory pages, the CDK automatically extends the memory using the IC's stable memory API.
+- **Page 0**: `MGR` manager header (magic, version, bucket size, per-id sizes,
+  and the global bucket allocation table).
+- **Page 1+**: physical buckets. Bucket `n` lives at
+  `StablePageSize + n * bucketSizeInPages * StablePageSize`.
+- Each `MemoryId` is a virtual memory mapped onto those buckets.
+
+Allocation is append-only; buckets are never freed or moved. When a write grows
+past the end of a virtual memory, the view adapter grows the backend first.
 
 ### Serialization
 

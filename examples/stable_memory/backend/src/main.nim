@@ -1,30 +1,37 @@
 import ../../../../src/nicp_cdk
+import ../../../../src/nicp_cdk/storage/memory_manager
 import ../../../../src/nicp_cdk/storage/stable_value
 import ../../../../src/nicp_cdk/storage/stable_seq
 import ../../../../src/nicp_cdk/storage/stable_table
 import ../../../../src/nicp_cdk/storage/stable_hash_map
 
-# Define base offsets for each storage structure to avoid collision
+# Stable memory is partitioned by MemoryId. These ids are part of the
+# application's stable schema: never reuse or renumber them after a deployment,
+# otherwise a structure would silently open another structure's region.
 const
-  IntDbOffset = 0'u64
-  UintDbOffset = 100000'u64
-  StringDbOffset = 200000'u64
-  PrincipalDbOffset = 300000'u64
-  BoolDbOffset = 400000'u64
-  FloatDbOffset = 500000'u64
-  DoubleDbOffset = 600000'u64
-  CharDbOffset = 700000'u64
-  ByteDbOffset = 800000'u64
-  SeqIntDbOffset = 900000'u64
-  BTreeDbOffset = 2000000'u64
-  BTreeDbLimit = 1000000'u64
-  HashDbOffset = 3000000'u64
-  HashDbLimit = 1000000'u64
+  IntMemoryId = newMemoryId(32)
+  UintMemoryId = newMemoryId(33)
+  StringMemoryId = newMemoryId(34)
+  PrincipalMemoryId = newMemoryId(35)
+  BoolMemoryId = newMemoryId(36)
+  FloatMemoryId = newMemoryId(37)
+  DoubleMemoryId = newMemoryId(38)
+  CharMemoryId = newMemoryId(39)
+  ByteMemoryId = newMemoryId(40)
+  SeqIntMemoryId = newMemoryId(41)
+  BTreeMemoryId = newMemoryId(42)
+  HashMemoryId = newMemoryId(43)
+
+# This CDK has no implicit lifecycle dispatch, so the example exports the IC
+# `canister_init` / `canister_post_upgrade` entry points explicitly and opens
+# stable storage there. Module-init code must not touch stable memory: it runs
+# during WASM instantiation, where the manager is not available yet.
+var manager: MemoryManager
 
 # ==================================================
 # int
 # ==================================================
-var intDb = initIcStableValue(int, IntDbOffset)
+var intDb: StableValue[int]
 
 proc int_set() {.update.} =
   let request = Request.new()
@@ -39,7 +46,7 @@ proc int_get() {.query.} =
 # ==================================================
 # uint
 # ==================================================
-var uintDb = initIcStableValue(uint, UintDbOffset)
+var uintDb: StableValue[uint]
 
 proc uint_set() {.update.} =
   let request = Request.new()
@@ -54,7 +61,7 @@ proc uint_get() {.query.} =
 # ==================================================
 # string
 # ==================================================
-var stringDb = initIcStableValue(string, StringDbOffset)
+var stringDb: StableValue[string]
 
 proc string_set() {.update.} =
   let request = Request.new()
@@ -70,7 +77,7 @@ proc string_get() {.query.} =
 # ==================================================
 # principal
 # ==================================================
-var principalDb = initIcStableValue(Principal, PrincipalDbOffset)
+var principalDb: StableValue[Principal]
 
 proc principal_set() {.update.} =
   let request = Request.new()
@@ -86,7 +93,7 @@ proc principal_get() {.query.} =
 # ==================================================
 # bool
 # ==================================================
-var boolDb = initIcStableValue(bool, BoolDbOffset)
+var boolDb: StableValue[bool]
 
 proc bool_set() {.update.} =
   let request = Request.new()
@@ -102,7 +109,7 @@ proc bool_get() {.query.} =
 # ==================================================
 # float
 # ==================================================
-var floatDb = initIcStableValue(float32, FloatDbOffset)
+var floatDb: StableValue[float32]
 
 proc float_set() {.update.} =
   let request = Request.new()
@@ -118,7 +125,7 @@ proc float_get() {.query.} =
 # ==================================================
 # double
 # ==================================================
-var doubleDb = initIcStableValue(float64, DoubleDbOffset)
+var doubleDb: StableValue[float64]
 
 proc double_set() {.update.} =
   let request = Request.new()
@@ -134,7 +141,7 @@ proc double_get() {.query.} =
 # ==================================================
 # char
 # ==================================================
-var charDb = initIcStableValue(char, CharDbOffset)
+var charDb: StableValue[char]
 
 proc char_set() {.update.} =
   let request = Request.new()
@@ -150,7 +157,7 @@ proc char_get() {.query.} =
 # ==================================================
 # byte
 # ==================================================
-var byteDb = initIcStableValue(byte, ByteDbOffset)
+var byteDb: StableValue[byte]
 
 proc byte_set() {.update.} =
   let request = Request.new()
@@ -166,7 +173,7 @@ proc byte_get() {.query.} =
 # ==================================================
 # seq[int]
 # ==================================================
-var seqIntDb = initIcStableSeq[int](SeqIntDbOffset)
+var seqIntDb: IcStableSeq[int]
 
 proc seqInt_reset() {.update.} =
   seqIntDb.clear()
@@ -206,9 +213,7 @@ proc seqInt_values() {.query.} =
 # ==================================================
 # IcStableHashMap[string, string]
 # ==================================================
-var hashDb = initIcStableHashMap[string, string](
-  initRawMemoryView(HashDbOffset, HashDbLimit)
-)
+var hashDb: IcStableHashMap[string, string]
 
 proc hash_reset() {.update.} =
   hashDb.clear()
@@ -239,9 +244,39 @@ type TableEntry = object
   key: string
   value: string
 
-var tableDb = initIcStableTable[string, string](
-  initRawMemoryView(BTreeDbOffset, BTreeDbLimit)
-)
+var tableDb: IcStableTable[string, string]
+
+proc openStorage(fresh: bool) =
+  ## Opens every stable structure on the manager. `fresh` is true only for
+  ## `canister_init`; `canister_post_upgrade` must reopen, never create.
+  ##
+  ## The application links the WASI polyfill, which owns an `MGR` prefix at
+  ## offset 0, so the application manager is placed after it.
+  let backend = newIcOffsetBackend(newIcStableBackend())
+  manager =
+    if fresh:
+      createMemoryManagerStrict(backend)
+    else:
+      openExistingMemoryManagerStrict(backend)
+
+  intDb = initStableValue[int](manager.getMemory(IntMemoryId))
+  uintDb = initStableValue[uint](manager.getMemory(UintMemoryId))
+  stringDb = initStableValue[string](manager.getMemory(StringMemoryId))
+  principalDb = initStableValue[Principal](manager.getMemory(PrincipalMemoryId))
+  boolDb = initStableValue[bool](manager.getMemory(BoolMemoryId))
+  floatDb = initStableValue[float32](manager.getMemory(FloatMemoryId))
+  doubleDb = initStableValue[float64](manager.getMemory(DoubleMemoryId))
+  charDb = initStableValue[char](manager.getMemory(CharMemoryId))
+  byteDb = initStableValue[byte](manager.getMemory(ByteMemoryId))
+  seqIntDb = initIcStableSeq[int](manager.getMemory(SeqIntMemoryId))
+  hashDb = initIcStableHashMap[string, string](manager.getMemory(HashMemoryId))
+  tableDb = initIcStableTable[string, string](manager.getMemory(BTreeMemoryId))
+
+proc canister_init() {.exportwasm.} =
+  openStorage(fresh = true)
+
+proc canister_post_upgrade() {.exportwasm.} =
+  openStorage(fresh = false)
 
 proc table_reset() {.update.} =
   tableDb.clear()

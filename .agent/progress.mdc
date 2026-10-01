@@ -1,0 +1,40 @@
+# 129-fix-memory-manager 進捗
+
+最終ゴール: `nicp_cdk` を stable-memory allocation の基盤ライブラリとし、`MGR`
+MemoryManager + `StableBackend` + MemoryId ベースの storage へ移行する。
+
+## ステータス
+
+- [x] Phase 0: ownership audit（ic-wasi-polyfill は 1025 pages を確保）
+- [x] Phase 1: `StableBackend` / `IcStableBackend` / `OffsetStableBackend` / `VecStableBackend`
+- [x] Phase 2: `MemoryId` / `MGR` format / strict create-open / validation / tests
+- [x] Phase 3: `StableMemoryView` adapter（backend + auto-grow、raw fixed offset 廃止）
+- [x] Phase 4: `IcStableTable` / `IcStableSeq` / `IcStableHashMap` / `StableValue` を backend ベースへ
+- [x] Phase 4: example (`examples/stable_memory`) を MemoryId ベースへ
+- [x] Phase 7: README / docs 更新
+- [ ] Phase 5: `nim-ic-sqlite` の duplicate implementation 削除（**別リポジトリ。本リポジトリでは未対応**）
+- [ ] Phase 6: cross-library compatibility test（SQLite 側が必要）
+
+## Phase 0 の結論
+
+- `ic-wasi-polyfill` / `wasi2ic` をリンクすると、canister instantiate 時に
+  stable memory が **1025 pages** まで grow し、offset 0 に polyfill 自身の
+  `MGR` prefix が存在する。
+- application の manager は `newIcOffsetBackend(newIcStableBackend())` で
+  1025 pages 以降に明示的に配置する。
+- CDK は `canister_init` / `canister_post_upgrade` を自動 dispatch しないため、
+  example では `{.exportwasm.}` で明示 export し、そこで storage を open する。
+
+## 検証
+
+- `tests/storage/*` は native `VecStableBackend` で green
+- `examples/stable_memory/backend` は wasm32 ビルド成功
+- canister integration (`tests/storage/test_stable_memory.nim`) は deploy /
+  upgrade を含めて green
+
+## メモ
+
+- `initMemoryManager` / `initVirtualMemory` / `VirtualMemory` / `initRawMemoryView`
+  は削除済み。VMM2 互換は実装しない。
+- `nim-ic-sqlite` は別リポジトリのため、本ブランチでは nicp_cdk 側のみ実装。
+  SQLite 側の dependency inversion は別途対応が必要。
