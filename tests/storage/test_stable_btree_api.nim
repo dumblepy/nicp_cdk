@@ -9,7 +9,7 @@ discard """
 import ../../src/nicp_cdk/storage/stable_table
 
 proc apiShape() =
-  var table = initIcStableTable[string, uint64]()
+  var table = initIcStableTable[string, uint64](newVecStableBackend())
   table["one"] = 1
   discard table.hasKey("one")
   discard table["one"]
@@ -22,7 +22,7 @@ proc apiShape() =
     discard key
     discard value
   table.clear()
-  var uncached = initIcStableTable[uint32, string](cacheSlots = 0)
+  var uncached = initIcStableTable[uint32, string](newVecStableBackend(), cacheSlots = 0)
   uncached[1'u32] = "one"
   discard uncached[1'u32]
 

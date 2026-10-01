@@ -1,0 +1,1622 @@
+---
+description: 129-fix-memory-manager ブランチでの開発時に読み込む
+alwaysApply: false
+---
+
+# nicp_cdk MemoryManager 再設計書
+
+## 1. 目的
+
+`dumblepy/nicp_cdk` の stable memory 管理を、`dumblepy/nim-ic-sqlite` で実装済みの MemoryManager 方式へ統一する。
+
+本変更では、現行 `nicp_cdk` の `VMM2` 形式および既存 MemoryManager API との互換性は維持しない。破壊的変更を許容し、今後の stable memory 管理の正本を `nicp_cdk` に一本化する。
+
+最終的な依存関係は以下とする。
+
+```text
+nicp_cdk
+  └─ StableBackend
+  └─ IcStableBackend
+  └─ OffsetStableBackend
+  └─ VecStableBackend
+  └─ MemoryId
+  └─ MemoryManager
+  └─ VirtualStableBackend
+  └─ StableMemoryView adapter
+  └─ IcStableTable / IcStableSeq / IcStableHashMap / StableValue
+
+nim-ic-sqlite
+  └─ depends on nicp_cdk
+  └─ uses nicp_cdk StableBackend / MemoryManager
+  └─ does not own a duplicate MemoryManager implementation
+```
+
+## 2. 対象リビジョン
+
+設計時点で確認したリビジョン:
+
+- `dumblepy/nicp_cdk`
+  - branch: `main`
+  - commit: `8c439edadef1b5d7cd9526a00945438d7a77e85e`
+- `dumblepy/nim-ic-sqlite`
+  - branch: `main`
+  - commit: `3928963d27bbd211007b7bce3fe37a5b199a78d1`
+
+本設計では、`nim-ic-sqlite` 側の以下の実装を基準仕様とする。
+
+- `src/ic_sqlite/stable/backend.nim`
+- `src/ic_sqlite/stable/ic_backend.nim`
+- `src/ic_sqlite/stable/memory_manager.nim`
+
+## 3. 現状
+
+### 3.1 nicp_cdk
+
+現在の `nicp_cdk` MemoryManager は以下の構造を持つ。
+
+```text
+magic: VMM2
+header:
+  bucket size
+  next physical offset
+  255 memory descriptors
+
+virtual memory:
+  linked list of physical buckets
+```
+
+主な特徴:
+
+- `initMemoryManager(baseOffset, bucketSize)`
+- `initVirtualMemory(manager, memoryId, limit)`
+- `VirtualMemory`
+- bucket ごとに次 bucket への pointer を持つ linked-list 方式
+- raw stable memory の物理 offset をアプリ側が意識可能
+- `StableMemoryView` に bridge して stable data structure が利用する
+- `stable_table` / `stable_seq` / `stable_hash_map` は raw fixed offset でも利用可能
+- `stable_value` は raw stable memory を直接操作する箇所が残る
+
+### 3.2 nim-ic-sqlite
+
+`nim-ic-sqlite` は `ic-stable-structures 0.7` 互換の `MGR` フォーマットを持つ。
+
+```text
+page 0
++0      "MGR"                     3 bytes
++3      layout version            1 byte
++4      allocated bucket count    u16
++6      bucket size in pages      u16
++8      reserved                  32 bytes
++40     memory size[255]          255 * u64
++2080   allocation table          32768 * u8
+
+page 1+
+        physical buckets
+```
+
+主な特徴:
+
+- `MemoryId = distinct uint8`
+- ID `255` は unallocated marker として予約
+- default bucket size = 128 stable pages
+- global allocation table
+- `StableBackend` abstraction
+- `VirtualStableBackend` も `StableBackend`
+- `createMemoryManagerStrict`
+- `openExistingMemoryManagerStrict`
+- create/open の意図を明示
+- corrupt / foreign storage を暗黙初期化しない
+- `VecStableBackend` による native test が可能
+- SQLite が `manager.getMemory(id)` をそのまま backend として利用可能
+
+## 4. 設計判断
+
+### 4.1 `nim-ic-sqlite` の方式を正とする
+
+`nicp_cdk` の `VMM2` を拡張するのではなく、`nim-ic-sqlite` の `MGR` 実装を `nicp_cdk` へ移植する。
+
+理由:
+
+1. SQLite ですでに実運用を想定した実装と test がある
+2. `StableBackend` abstraction が汎用的
+3. `MemoryId` ごとの独立 growth を扱える
+4. strict create/open により upgrade 時の誤初期化を防止できる
+5. `ic-stable-structures 0.7` 互換 layout を利用できる
+6. SQLite と CDK stable data structure が同じ allocator を共有できる
+7. fixed offset 管理を application code から排除できる
+
+### 4.2 MemoryManager の正本は nicp_cdk
+
+最終状態では MemoryManager 実装を `nicp_cdk` のみに置く。
+
+`nim-ic-sqlite` 側の以下を削除する。
+
+```text
+src/ic_sqlite/stable/backend.nim
+src/ic_sqlite/stable/ic_backend.nim
+src/ic_sqlite/stable/memory_manager.nim
+```
+
+ただし SQLite 固有の stable storage は残す。
+
+例:
+
+```text
+src/ic_sqlite/stable/superblock.nim
+src/ic_sqlite/vfs/*
+src/ic_sqlite/vfs/overlay.nim
+```
+
+SQLite 固有コードは `nicp_cdk` の generic stable storage abstraction を import する。
+
+### 4.3 VMM2 互換は実装しない
+
+既存 `VMM2` storage の読み込み、migration、compatibility adapter は対象外とする。
+
+削除対象:
+
+```nim
+initMemoryManager(baseOffset: uint64, ...)
+initVirtualMemory(...)
+VirtualMemory
+VMM2 magic
+linked-list bucket format
+```
+
+既存 canister の VMM2 image を新バージョンで開く保証はしない。
+
+## 5. 最終アーキテクチャ
+
+```text
+                    IC stable64 memory
+                            │
+                            ▼
+                    IcStableBackend
+                            │
+                            ▼
+                 ┌────────────────────┐
+                 │   MemoryManager    │
+                 │      "MGR"         │
+                 └────────────────────┘
+                    │       │       │
+            MemoryId 1  Id 2    Id 20
+                    │       │       │
+                    ▼       ▼       ▼
+           VirtualStableBackend
+              │        │         │
+              │        │         └─ SQLite
+              │        └─ IcStableSeq
+              └─ IcStableTable
+```
+
+原則:
+
+> 1つの managed stable-memory region に対して allocator の正本は1つだけとする。
+
+同じ raw region に対し、別々の `MemoryManager` instance が独立して allocation を行う設計を避ける。
+
+## 6. nicp_cdk の新モジュール構成
+
+推奨構成:
+
+```text
+src/nicp_cdk/storage/
+├── stable_backend.nim
+├── memory_manager.nim
+├── stable_table.nim
+├── stable_seq.nim
+├── stable_hash_map.nim
+├── stable_value.nim
+└── libs/
+    ├── stable_backend.nim
+    ├── ic_stable_backend.nim
+    ├── memory_manager.nim
+    ├── memory_view.nim
+    ├── stable_allocator.nim
+    ├── stable_btree.nim
+    ├── serialization.nim
+    └── stable_key_codec.nim
+```
+
+### 6.1 public facade
+
+`storage/stable_backend.nim`
+
+```nim
+import ./libs/stable_backend
+import ./libs/ic_stable_backend
+
+export stable_backend
+export ic_stable_backend
+```
+
+`storage/memory_manager.nim`
+
+```nim
+import ./libs/stable_backend
+import ./libs/ic_stable_backend
+import ./libs/memory_manager
+import ./libs/memory_view
+
+export stable_backend
+export ic_stable_backend
+export memory_manager
+export memory_view
+```
+
+利用者は内部 `libs` を直接 import しない。
+
+## 7. StableBackend
+
+### 7.1 interface
+
+`nim-ic-sqlite` の interface をそのまま基準にする。
+
+```nim
+const StablePageSize* = 64'u64 * 1024'u64
+
+type
+  StableBackend* = ref object of RootObj
+
+method sizePages*(backend: StableBackend): uint64 {.base.}
+method grow*(backend: StableBackend; pages: uint64): bool {.base.}
+method read*(
+  backend: StableBackend,
+  offset: uint64,
+  dst: pointer,
+  size: uint64
+) {.base.}
+
+method write*(
+  backend: StableBackend,
+  offset: uint64,
+  src: pointer,
+  size: uint64
+) {.base.}
+```
+
+全 offset は byte 単位、growth の単位のみ stable page とする。
+
+### 7.2 実装
+
+以下を `nicp_cdk` に持つ。
+
+#### IcStableBackend
+
+```nim
+type IcStableBackend* = ref object of StableBackend
+
+proc newIcStableBackend*(): IcStableBackend
+```
+
+IC `stable64_*` syscall を backend として抽象化する。
+
+#### OffsetStableBackend
+
+```nim
+type StableRegion* = object
+  baseOffset*: uint64
+  maxBytes*: uint64
+
+proc newOffsetStableBackend*(
+  raw: StableBackend,
+  baseOffset: uint64,
+  maxBytes = high(uint64)
+): OffsetStableBackend
+```
+
+用途:
+
+- bounded subregion
+- integration test
+- foreign allocator との明示的 partition
+- legacy / specialized use case
+
+ただし通常の application storage では fixed offset を推奨しない。
+
+#### VecStableBackend
+
+```nim
+proc newVecStableBackend*(): VecStableBackend
+```
+
+native unit test 用。
+
+## 8. MemoryId
+
+```nim
+type MemoryId* = distinct uint8
+
+proc newMemoryId*(id: uint8): MemoryId
+proc memoryIdValue*(id: MemoryId): uint8
+```
+
+ルール:
+
+- `0 .. 254` のみ利用可能
+- `255` は allocation table の free marker
+- raw `uint8` を public storage API に直接渡さない
+- ID は application の schema の一部として扱う
+- 一度 production に出した ID の意味を変更しない
+
+推奨:
+
+```nim
+const
+  UsersMemoryId* = newMemoryId(10)
+  OrdersMemoryId* = newMemoryId(11)
+  SqliteMemoryId* = newMemoryId(20)
+```
+
+## 9. MGR 永続フォーマット
+
+`nicp_cdk` の format を `nim-ic-sqlite` 現行実装と byte-identical にする。
+
+### 9.1 header
+
+```text
+offset  size        field
+0       3           "MGR"
+3       1           layoutVersion = 1
+4       2           allocatedBuckets
+6       2           bucketSizeInPages
+8       32          reserved
+40      2040        memorySizesInPages[255]
+2080    32768       bucketAllocationTable
+```
+
+allocation table:
+
+```text
+0..254   MemoryId owner
+255      free
+```
+
+### 9.2 physical bucket
+
+```text
+physical =
+    StablePageSize
+  + bucketNumber * bucketSizeInPages * StablePageSize
+```
+
+page 0 は manager metadata 専用。
+
+### 9.3 default bucket size
+
+```nim
+DefaultBucketSizeInPages = 128'u16
+```
+
+= 8 MiB。
+
+これは compatibility のため変更しない。
+
+### 9.4 limits
+
+```text
+MemoryId count: 255
+Max physical buckets: 32768
+```
+
+layout version `1` を維持する。
+
+## 10. MemoryManager API
+
+### 10.1 create
+
+```nim
+proc createMemoryManagerStrict*(
+  backend: StableBackend,
+  bucketSizeInPages = DefaultBucketSizeInPages
+): MemoryManager
+```
+
+条件:
+
+- `backend != nil`
+- `backend.sizePages == 0`
+
+非空 backend では必ず失敗する。
+
+fresh install 用。
+
+### 10.2 open
+
+```nim
+proc openExistingMemoryManagerStrict*(
+  backend: StableBackend
+): MemoryManager
+```
+
+条件:
+
+- backing store が存在する
+- magic == `MGR`
+- version が対応
+- allocation table が整合
+- memory size と bucket count が一致
+- physical backing store が truncate されていない
+
+異常時は一切 write しない。
+
+upgrade / restart 用。
+
+### 10.3 `initMemoryManager` は削除
+
+曖昧な create-or-open API は public API に残さない。
+
+削除:
+
+```nim
+initMemoryManager(...)
+initMemoryManagerCompat(...)
+```
+
+理由:
+
+upgrade 時に MemoryId を間違えた場合や、wrong region を渡した場合に fresh storage を生成してしまう API を排除する。
+
+## 11. VirtualStableBackend
+
+```nim
+type VirtualStableBackend* = ref object of StableBackend
+  manager: MemoryManager
+  id: MemoryId
+```
+
+取得:
+
+```nim
+proc getMemory*(
+  manager: MemoryManager,
+  id: MemoryId
+): VirtualStableBackend
+```
+
+この backend は:
+
+- `sizePages`
+- `grow`
+- `read`
+- `write`
+
+を通常の `StableBackend` と同様に実装する。
+
+これにより consumer は MemoryManager を知らなくても `StableBackend` のみで動作可能となる。
+
+## 12. allocation algorithm
+
+### 12.1 grow
+
+virtual memory の現在 page 数を `oldSize`、要求後を `newSize` とする。
+
+```text
+currentBuckets =
+  ceil(oldSize / bucketSizeInPages)
+
+requiredBuckets =
+  ceil(newSize / bucketSizeInPages)
+
+newBuckets =
+  requiredBuckets - currentBuckets
+```
+
+physical bucket は global table の末尾から連続して確保する。
+
+現行 `nim-ic-sqlite` と同じ append-only allocation とする。
+
+### 12.2 metadata write order
+
+新 bucket 確保時:
+
+1. raw backend を必要 page 数まで grow
+2. allocation table に owner ID を書く
+3. in-memory `memoryBuckets` を更新
+4. `allocatedBuckets` を更新
+5. memory size を更新
+6. manager header を保存
+
+途中失敗時に unknown ownership が残らないよう、allocation table 更新をまとめて書く。
+
+### 12.3 deallocation
+
+初期実装では実装しない。
+
+MemoryId の storage shrink / bucket free は対象外。
+
+理由:
+
+- stable storage の lifetime は長い
+- free/reuse は crash consistency を複雑化する
+- current `nim-ic-sqlite` format との互換性を優先する
+
+## 13. MemoryManager validation
+
+`openExistingMemoryManagerStrict` では最低限以下を検証する。
+
+1. magic
+2. layout version
+3. bucket size != 0
+4. allocated bucket count <= max
+5. memory size overflow
+6. allocated range 内に free marker がない
+7. allocated range 外に owner が残っていない
+8. memory size が要求する bucket 数と allocation table が一致
+9. required physical pages <= backend.sizePages
+
+corrupt storage を自動 repair しない。
+
+## 14. StableMemoryView の再設計
+
+現在の stable structures は `StableMemoryView` ベースで実装されているため、この abstraction 自体は維持する。
+
+ただし raw fixed-offset を primary API から外す。
+
+### 14.1 新 API
+
+```nim
+proc initBackendMemoryView*(
+  backend: StableBackend,
+  limit: uint64 = 0
+): StableMemoryView
+
+proc view*(
+  backend: StableBackend,
+  limit: uint64 = 0
+): StableMemoryView
+```
+
+`VirtualStableBackend` も通常の backend として渡せる。
+
+```nim
+let usersMemory = manager.getMemory(UsersMemoryId)
+
+var users = initIcStableTable[string, User](
+  usersMemory.view()
+)
+```
+
+### 14.2 write 時の auto-grow
+
+重要な互換性要件。
+
+現在の stable structures は `StableMemoryView.write` 側で backing storage が拡張可能であることを前提としている。
+
+一方、`VirtualStableBackend.write` は allocation 済み範囲外への write を拒否する。
+
+そのため `StableMemoryView` adapter 側で:
+
+```text
+requiredBytes = offset + data.len
+requiredPages = ceil(requiredBytes / StablePageSize)
+if backend.sizePages < requiredPages:
+    backend.grow(requiredPages - backend.sizePages)
+backend.write(...)
+```
+
+を行う。
+
+これにより `IcStableTable` / allocator の既存ロジックを大きく書き換えず利用できる。
+
+### 14.3 raw view
+
+以下は削除または internal-only とする。
+
+```nim
+initRawMemoryView(baseOffset, limit)
+```
+
+application code が再び physical offset を直接管理することを防ぐ。
+
+必要な subregion は:
+
+```nim
+newOffsetStableBackend(raw, baseOffset, maxBytes).view()
+```
+
+という明示 backend composition に統一する。
+
+## 15. stable_table
+
+現在:
+
+```nim
+initIcStableTable(memory = initRawMemoryView())
+```
+
+を廃止する。
+
+新 API:
+
+```nim
+proc initIcStableTable*[K, V](
+  memory: StableMemoryView,
+  cacheSlots: int = 16,
+  valueCodecId: uint32 = 0
+): IcStableTable[K, V]
+```
+
+便利 overload を追加してよい。
+
+```nim
+proc initIcStableTable*[K, V](
+  backend: StableBackend,
+  cacheSlots: int = 16,
+  valueCodecId: uint32 = 0
+): IcStableTable[K, V] =
+  initIcStableTable[K, V](backend.view(), cacheSlots, valueCodecId)
+```
+
+利用例:
+
+```nim
+let manager = openExistingMemoryManagerStrict(newIcStableBackend())
+
+var users =
+  initIcStableTable[string, User](
+    manager.getMemory(newMemoryId(10))
+  )
+```
+
+default raw memory constructor は持たせない。
+
+## 16. stable_seq
+
+現行の compatibility overload:
+
+```nim
+initIcStableSeq[T](baseOffset: uint64 = 0)
+```
+
+は削除する。
+
+新 API:
+
+```nim
+proc initIcStableSeq*[T](
+  memory: StableMemoryView
+): IcStableSeq[T]
+
+proc initIcStableSeq*[T](
+  backend: StableBackend
+): IcStableSeq[T]
+```
+
+MemoryId から直接生成可能になる。
+
+## 17. stable_hash_map
+
+以下を削除する。
+
+```nim
+initIcStableHashMap(memory = initRawMemoryView())
+```
+
+backend / view を必須にする。
+
+```nim
+let mapMemory = manager.getMemory(HashMapMemoryId)
+var db = initIcStableHashMap[string, Value](mapMemory)
+```
+
+## 18. stable_value
+
+`stable_value.nim` は current implementation で raw `stableWrite` を直接使用しているため、本変更で必ず abstraction 化する。
+
+変更前:
+
+```text
+baseOffset
+stableRead
+stableWrite
+```
+
+変更後:
+
+```text
+StableBackend
+or
+StableMemoryView
+```
+
+推奨は `StableMemoryView` に統一する。
+
+```nim
+type StableValue*[T] = object
+  memory: StableMemoryView
+  ...
+```
+
+これにより:
+
+```nim
+let memory = manager.getMemory(SettingsMemoryId)
+let settings = initStableValue[Settings](memory)
+```
+
+とする。
+
+## 19. raw stable memory API
+
+`stable_memory.nim` の責務を縮小する。
+
+application storage code から以下を直接使わせない。
+
+```nim
+stableRead
+stableWrite
+ensureStableSize
+stableSizeBytes
+```
+
+IC syscall wrapper は `IcStableBackend` の実装詳細とする。
+
+必要なら compatibility のため module を残してもよいが、public storage documentation では backend API のみを案内する。
+
+## 20. ic-wasi-polyfill / wasi2ic との所有権
+
+これは P0 設計項目とする。
+
+`MGR` フォーマットが同じであっても、同一 raw stable memory に対して複数の allocator instance が独立して allocation table を更新すると不整合が起こり得る。
+
+### 原則
+
+```text
+one managed region
+=
+one allocator authority
+```
+
+### 必須確認事項
+
+1. `ic-wasi-polyfill` が raw stable memory page 0 の `MGR` を使用するか
+2. 使用する MemoryId
+3. allocation が init 時だけか、runtime 中にも発生するか
+4. `nicp_cdk` から同一 `MGR` を safely reopen してよいか
+5. manager metadata cache が polyfill 側と競合しないか
+6. polyfill reserved IDs を静的に確保できるか
+
+### unsafe な構成
+
+```text
+raw stable memory
+├─ polyfill MemoryManager instance A
+└─ nicp_cdk MemoryManager instance B
+```
+
+両方が allocation を行う構成。
+
+### 推奨構成
+
+可能であれば MemoryId ownership を静的に決める。
+
+例:
+
+```text
+0..7      reserved for runtime/polyfill
+8..31     nicp_cdk internal
+32..254   application
+255       reserved free marker
+```
+
+ただしこの範囲は実際の polyfill contract を確認して確定すること。
+
+未確認のまま固定値を API 契約にしてはならない。
+
+### `NICP_SKIP_WASI2IC`
+
+`nicp_cdk` build tooling には、stable memory を application が直接管理する canister 向けに `NICP_SKIP_WASI2IC` の考え方が存在する。
+
+MemoryManager 導入後も、WASI runtime と stable storage の所有権は build configuration と一体でテストする。
+
+## 21. lifecycle
+
+### 21.1 fresh install
+
+```nim
+var stableManager: MemoryManager
+
+proc canisterInit() =
+  stableManager =
+    createMemoryManagerStrict(
+      newIcStableBackend()
+    )
+```
+
+### 21.2 post-upgrade
+
+```nim
+proc canisterPostUpgrade() =
+  stableManager =
+    openExistingMemoryManagerStrict(
+      newIcStableBackend()
+    )
+```
+
+`post_upgrade` で create fallback を行わない。
+
+### 21.3 application helper
+
+必要であれば `nicp_cdk` に lifecycle wrapper を追加する。
+
+```nim
+type StableMemoryOpenMode* = enum
+  smCreate
+  smOpenExisting
+
+proc openStableMemoryManager*(
+  mode: StableMemoryOpenMode
+): MemoryManager
+```
+
+ただし `create/open` の意味が隠れない API にする。
+
+## 22. MemoryId registry
+
+MemoryId collision は compile-time では完全には検出できないため、application ごとに registry module を作る。
+
+例:
+
+```nim
+# storage_memory_ids.nim
+
+const
+  UserTableMemoryId* = newMemoryId(32)
+  AuditLogMemoryId* = newMemoryId(33)
+  SqliteMemoryId* = newMemoryId(40)
+```
+
+MemoryId を各 repository 内に散在させない。
+
+README に以下を明記する。
+
+> MemoryId は stable schema の一部であり、production deployment 後に再利用・意味変更してはならない。
+
+## 23. nim-ic-sqlite 側の変更
+
+### 23.1 dependency
+
+`nim-ic-sqlite` は `nicp_cdk` の新 MemoryManager API を dependency とする。
+
+### 23.2 import
+
+変更前:
+
+```nim
+import ./stable/backend
+import ./stable/memory_manager
+```
+
+変更後:
+
+```nim
+import nicp_cdk/storage/stable_backend
+import nicp_cdk/storage/memory_manager
+```
+
+### 23.3 削除
+
+SQLite repository から削除:
+
+```text
+src/ic_sqlite/stable/backend.nim
+src/ic_sqlite/stable/ic_backend.nim
+src/ic_sqlite/stable/memory_manager.nim
+```
+
+必要なら一時的 re-export shim を置けるが、今回 compatibility 不要のため原則削除する。
+
+### 23.4 db.nim
+
+`DbStorage` は以下を引き続き持てる。
+
+```nim
+proc managedDbStorage*(
+  manager: MemoryManager,
+  id: MemoryId
+): DbStorage
+
+proc exclusiveDbStorage*(
+  raw: StableBackend
+): DbStorage
+```
+
+`managedDbStorage` 実装:
+
+```nim
+DbStorage(
+  mode: dsmManaged,
+  backend: manager.getMemory(id)
+)
+```
+
+### 23.5 legacy fixed-offset
+
+既存 compatibility 不要なら以下を削除する。
+
+```nim
+dsmLegacyFixedOffset
+legacyWasi2icDbStorage
+legacyWasi2icOffsetBackend
+Wasi2icReservedStablePages
+```
+
+新規設計では「1025 page の後なら安全」という暗黙 contract を残さない。
+
+## 24. dependency cycle
+
+禁止する依存:
+
+```text
+nicp_cdk -> nim-ic-sqlite
+```
+
+正しい依存:
+
+```text
+nim-ic-sqlite -> nicp_cdk
+```
+
+MemoryManager に SQLite 固有型を一切入れない。
+
+`nicp_cdk` の storage layer は generic byte storage のみ担当する。
+
+## 25. error policy
+
+low-level storage error は原則 exception でよい。
+
+例:
+
+```text
+ValueError
+CatchableError
+```
+
+対象:
+
+- invalid MemoryId
+- nil backend
+- corrupted MGR
+- bounds violation
+- invalid bucket metadata
+- grow failure
+
+MemoryManager は damaged state を repair しない。
+
+SQLite 側ではこれらを必要に応じて `DbError` に変換する。
+
+## 26. concurrency / execution model
+
+IC canister は単一 message 実行の局所的な逐次性があるが、`await` により execution を跨ぐコードでは state が再入可能になる。
+
+MemoryManager 自体は async object にしない。
+
+原則:
+
+- allocation / read / write は同期処理のみ
+- MemoryManager instance は message-local/global heap object
+- upgrade 後に必ず reopen
+- 同一 managed region に複数 allocator authority を作らない
+
+## 27. crash consistency
+
+MemoryManager は database transaction manager ではない。
+
+保証対象:
+
+- manager metadata format の自己整合性
+- bucket ownership の一貫性
+- wrong region の fail-closed
+
+保証しない:
+
+- application の複数 data structure write の原子性
+- `IcStableTable A` と `IcStableTable B` の transaction
+- SQLite transaction と他 stable structure の transaction
+
+cross-structure atomicity が必要な state は SQLite 側に寄せる。
+
+## 28. performance
+
+### 28.1 VirtualStableBackend bucket cache
+
+`nim-ic-sqlite` 現行の one-entry translation cache を移植する。
+
+```text
+cacheLogicalBase
+cachePhysicalBase
+cacheLength
+cacheValid
+```
+
+同じ bucket 内の連続 I/O で allocation table lookup を省略する。
+
+### 28.2 manager open
+
+open 時に allocation table を読み、MemoryId ごとの bucket list を heap 上に再構築する。
+
+最大 allocation table:
+
+```text
+32768 bytes
+```
+
+許容可能なサイズ。
+
+### 28.3 linked-list 方式の廃止
+
+VMM2 の bucket traversal は logical bucket index に比例した linked-list traversal が発生し得る。
+
+MGR では heap 上の bucket array index で直接物理 bucket を得られるため、random access に適する。
+
+## 29. testing strategy
+
+## 29.1 StableBackend unit test
+
+`VecStableBackend`:
+
+- grow
+- read/write
+- bounds
+- zero-length I/O
+- overflow
+- offset backend boundary
+- page alignment
+
+## 29.2 MemoryId test
+
+- 0
+- 254
+- 255 reject
+- roundtrip
+
+## 29.3 MemoryManager create test
+
+- empty backend から作成
+- header magic
+- version
+- allocation table init
+- non-empty backend reject
+
+## 29.4 MemoryManager open test
+
+- valid MGR reopen
+- wrong magic
+- wrong version
+- bucket size zero
+- allocated count overflow
+- truncated backend
+- free marker inside allocated range
+- non-free owner outside allocated range
+- memory size / bucket count mismatch
+
+## 29.5 multi-memory test
+
+例:
+
+```text
+MemoryId 10: grow 1 page
+MemoryId 11: grow 300 pages
+MemoryId 10: grow additional 200 pages
+```
+
+確認:
+
+- logical content isolation
+- physical bucket ownership
+- reopen 後も同じデータ
+- cross-bucket read/write
+
+## 29.6 StableMemoryView integration test
+
+- backend auto-grow
+- view bounds
+- IcStableTable insert/read/reopen
+- IcStableSeq append/reopen
+- IcStableHashMap CRUD/reopen
+- StableValue read/write/reopen
+
+## 29.7 format compatibility test
+
+`nim-ic-sqlite` 由来の既知 MGR fixture を `nicp_cdk` で open する。
+
+逆方向も確認する。
+
+```text
+nicp_cdk creates MGR
+→ nim-ic-sqlite consumer opens it
+
+existing nim-ic-sqlite fixture
+→ nicp_cdk opens it
+```
+
+最終的に SQLite 側の独自 manager 実装を削除した後は、fixture compatibility test を `nicp_cdk` に残す。
+
+## 29.8 SQLite integration test
+
+1. `nicp_cdk` MemoryManager create
+2. `MemoryId 40` を SQLite に割り当て
+3. DB create
+4. table create / insert
+5. close
+6. MemoryManager reopen
+7. SQLite openExisting
+8. data verify
+
+別 MemoryId に `IcStableTable` を同時配置し、互いに壊れないことも検証する。
+
+## 29.9 upgrade test
+
+canister integration:
+
+```text
+install
+→ manager create
+→ write stable table
+→ write SQLite
+→ upgrade
+→ manager strict reopen
+→ both readable
+```
+
+wrong MemoryId を指定した場合に fresh DB / fresh table を暗黙生成しないことも確認する。
+
+## 30. example の変更
+
+`examples/stable_memory` を fixed offset 例から MemoryId 例へ変更する。
+
+変更前:
+
+```nim
+var tableDb = initIcStableTable[string, string](
+  initRawMemoryView(BTreeDbOffset, BTreeDbLimit)
+)
+```
+
+変更後:
+
+```nim
+const
+  TableMemoryId = newMemoryId(32)
+  HashMemoryId = newMemoryId(33)
+
+let raw = newIcStableBackend()
+
+var manager =
+  createMemoryManagerStrict(raw)
+
+var tableDb =
+  initIcStableTable[string, string](
+    manager.getMemory(TableMemoryId)
+  )
+
+var hashDb =
+  initIcStableHashMap[string, string](
+    manager.getMemory(HashMemoryId)
+  )
+```
+
+upgrade example では `openExistingMemoryManagerStrict` を使う。
+
+## 31. README
+
+新 storage section を追加する。
+
+最低限以下を説明する。
+
+1. stable memory は MemoryManager で partition する
+2. MemoryId は stable schema
+3. fresh install / post_upgrade の違い
+4. fixed offset を使わない
+5. MemoryId 255 は予約
+6. SQLite と stable structures を共存可能
+7. wasi/polyfill ownership の注意
+8. one manager authority 原則
+
+## 32. 削除・変更対象一覧
+
+### nicp_cdk
+
+#### 置換
+
+```text
+src/nicp_cdk/storage/libs/memory_manager.nim
+```
+
+VMM2 実装を全面置換。
+
+#### 追加
+
+```text
+src/nicp_cdk/storage/libs/stable_backend.nim
+src/nicp_cdk/storage/libs/ic_stable_backend.nim
+src/nicp_cdk/storage/stable_backend.nim
+src/nicp_cdk/storage/memory_manager.nim
+```
+
+#### 変更
+
+```text
+src/nicp_cdk/storage/libs/memory_view.nim
+src/nicp_cdk/storage/libs/stable_btree.nim
+src/nicp_cdk/storage/stable_table.nim
+src/nicp_cdk/storage/stable_seq.nim
+src/nicp_cdk/storage/stable_hash_map.nim
+src/nicp_cdk/storage/stable_value.nim
+examples/stable_memory/backend/src/main.nim
+README.md
+tests/storage/*
+```
+
+#### 廃止予定 API
+
+```nim
+initMemoryManager(baseOffset, ...)
+initVirtualMemory(...)
+VirtualMemory
+initRawMemoryView(...)
+initIcStableSeq(baseOffset)
+default raw-memory constructors
+```
+
+### nim-ic-sqlite
+
+#### 削除
+
+```text
+src/ic_sqlite/stable/backend.nim
+src/ic_sqlite/stable/ic_backend.nim
+src/ic_sqlite/stable/memory_manager.nim
+```
+
+#### 変更
+
+```text
+src/ic_sqlite/db.nim
+src/ic_sqlite/lifecycle.nim
+src/ic_sqlite/*.nim
+tests/*
+examples/*
+README.md
+ic_sqlite.nimble
+```
+
+## 33. 実装フェーズ
+
+### Phase 0: ownership audit
+
+完了条件:
+
+- `ic-wasi-polyfill` / `wasi2ic` の stable memory usage を確認
+- reserved MemoryId を確認
+- concurrent allocator authority が発生しない構成を決定
+
+この確認なしに production layout を固定しない。
+
+### Phase 1: StableBackend を nicp_cdk へ移植
+
+実装:
+
+- StableBackend
+- IcStableBackend
+- OffsetStableBackend
+- VecStableBackend
+
+SQLite とは無関係な generic layer として完成させる。
+
+### Phase 2: MGR MemoryManager を移植
+
+実装:
+
+- MemoryId
+- MGR format
+- strict create/open
+- virtual backend
+- validation
+- tests
+
+この時点で VMM2 を削除する。
+
+### Phase 3: StableMemoryView adapter
+
+backend を `StableMemoryView` として利用できるようにする。
+
+auto-grow を実装する。
+
+raw fixed-offset default API を削除する。
+
+### Phase 4: nicp_cdk storage structures 移行
+
+以下を backend/MemoryId ベースに変更。
+
+- IcStableTable
+- IcStableSeq
+- IcStableHashMap
+- StableValue
+
+examples も更新。
+
+### Phase 5: nim-ic-sqlite dependency inversion
+
+SQLite の duplicate implementation を削除。
+
+`nicp_cdk/storage/memory_manager` を import。
+
+SQLite unit/integration test を全て通す。
+
+### Phase 6: cross-library compatibility test
+
+- MGR fixture
+- SQLite
+- BTree
+- Seq
+- HashMap
+- upgrade
+
+を同一 manager 上で実行。
+
+### Phase 7: documentation / release
+
+- README
+- example
+- breaking changes
+- MemoryId schema rule
+- upgrade rule
+- WASI ownership rule
+
+を更新。
+
+## 34. P0 リスク
+
+### R1. ic-wasi-polyfill allocator collision
+
+最重要。
+
+同じ raw stable memory を runtime と application の2つの manager が更新すると allocation metadata が競合する可能性がある。
+
+対策:
+
+- MemoryId ownership の明文化
+- allocator authority の一元化
+- integration test
+- 必要なら build mode を分離
+
+### R2. StableMemoryView の growth semantics
+
+新 `StableBackend.write` は自動 grow しない。
+
+既存 data structures は自動 growth を前提としているため、adapter で補わないと regression する。
+
+### R3. stable_value の raw access
+
+`stable_value.nim` を移行漏れすると MemoryManager 外の raw region を破壊する可能性がある。
+
+### R4. MemoryId の再利用
+
+ID を変更すると別 storage を開く。
+
+wrong ID でも empty virtual memory は合法なので、各 data structure 自身の magic/version validation が重要。
+
+SQLite は `doiOpenExisting` を使う。
+
+### R5. duplicate MemoryManager implementation
+
+移行期間に `nicp_cdk` と `nim-ic-sqlite` の両方へ同一コードを残すと仕様 drift が起きる。
+
+移行完了後は SQLite 側コピーを削除する。
+
+## 35. invariants
+
+実装で維持する不変条件:
+
+### INV-01
+
+MemoryId 255 は利用しない。
+
+### INV-02
+
+同じ physical bucket を複数 MemoryId が所有しない。
+
+### INV-03
+
+`memorySizesInPages[id]` に必要な bucket 数と allocation table が一致する。
+
+### INV-04
+
+existing storage open 時に暗黙初期化しない。
+
+### INV-05
+
+MemoryManager metadata は `MGR` version 1 と byte-compatible。
+
+### INV-06
+
+application code は physical stable offset を通常使用しない。
+
+### INV-07
+
+1 managed region に allocator authority は1つ。
+
+### INV-08
+
+SQLite 固有コードを `nicp_cdk` に入れない。
+
+### INV-09
+
+`nim-ic-sqlite` は `nicp_cdk` MemoryManager を唯一の実装として利用する。
+
+### INV-10
+
+upgrade 後の reopen は strict open を利用する。
+
+## 36. 非目標
+
+本変更では以下を実装しない。
+
+- VMM2 migration
+- VMM2 backward compatibility
+- bucket free
+- virtual memory shrink
+- multi-structure transaction
+- automatic MemoryId assignment
+- online relocation of MemoryId
+- application schema migration framework
+- SQLite schema migration自体の変更
+
+## 37. 完了条件
+
+以下を満たした時点で完了とする。
+
+- [ ] `nicp_cdk` に `StableBackend` が存在する
+- [ ] `IcStableBackend` が IC stable64 を実装する
+- [ ] `VecStableBackend` native test が通る
+- [ ] `OffsetStableBackend` test が通る
+- [ ] `MGR` layout が `nim-ic-sqlite` 現行 format と一致する
+- [ ] `MemoryId(255)` を拒否する
+- [ ] strict create/open が実装されている
+- [ ] corrupted MGR を reject する
+- [ ] `VirtualStableBackend` が複数 MemoryId を分離する
+- [ ] `StableMemoryView` が backend を利用する
+- [ ] view write が必要 page を auto-grow する
+- [ ] `IcStableTable` が MemoryId backend で動く
+- [ ] `IcStableSeq` が MemoryId backend で動く
+- [ ] `IcStableHashMap` が MemoryId backend で動く
+- [ ] `StableValue` に raw fixed-offset access が残っていない
+- [ ] example から fixed offset 管理を除去する
+- [ ] VMM2 実装を削除する
+- [ ] `nim-ic-sqlite` の duplicate backend / manager を削除する
+- [ ] SQLite が `nicp_cdk` manager で create/open/update/query できる
+- [ ] stable table と SQLite を同一 manager 上で共存できる
+- [ ] canister upgrade 後に両方 reopen できる
+- [ ] WASI/polyfill の ownership contract が決定・文書化されている
+- [ ] README に MemoryId schema rule が記載されている
+
+## 38. 推奨最終 API 使用例
+
+### fresh canister
+
+```nim
+import nicp_cdk/storage/[memory_manager, stable_table]
+import ic_sqlite
+
+const
+  UserMemoryId = newMemoryId(32)
+  SqliteMemoryId = newMemoryId(40)
+
+var
+  manager: MemoryManager
+  users: IcStableTable[string, User]
+  db: Db
+
+proc initStorage() =
+  manager =
+    createMemoryManagerStrict(
+      newIcStableBackend()
+    )
+
+  users =
+    initIcStableTable[string, User](
+      manager.getMemory(UserMemoryId)
+    )
+
+  db =
+    initDatabase(
+      managedDbStorage(manager, SqliteMemoryId),
+      migrations,
+      doiCreateOnly
+    )
+```
+
+### post-upgrade
+
+```nim
+proc reopenStorage() =
+  manager =
+    openExistingMemoryManagerStrict(
+      newIcStableBackend()
+    )
+
+  users =
+    initIcStableTable[string, User](
+      manager.getMemory(UserMemoryId)
+    )
+
+  db =
+    reopenDatabaseAfterUpgrade(
+      managedDbStorage(manager, SqliteMemoryId),
+      migrations
+    )
+```
+
+application は stable memory の byte offset を一切持たない。
+
+## 39. 設計上の最終結論
+
+今回の変更では `nicp_cdk` を stable-memory allocation の基盤ライブラリとし、`nim-ic-sqlite` をその consumer に変更する。
+
+採用する原則は以下。
+
+```text
+physical offset management
+        ↓ 廃止
+
+MemoryId based virtual stable memory
+        ↓
+
+one canonical MGR MemoryManager
+        ↓
+
+StableBackend
+        ↓
+ ┌───────────────┬───────────────┬──────────────┐
+ │ IcStableTable │ IcStableSeq   │ SQLite       │
+ └───────────────┴───────────────┴──────────────┘
+```
+
+`VMM2` は互換性を維持せず削除する。
+
+`nim-ic-sqlite` の MemoryManager 実装をそのまま二重保守するのではなく、generic 部分を `nicp_cdk` に移し、SQLite 側は import して利用する。
+
+これにより、今後の canister application では stable memory の fixed offset table を人手で管理せず、MemoryId を stable schema として管理できるようにする。
+
+## 進捗
+
+### 完了（nicp_cdk 側）
+
+- [x] `storage/libs/stable_backend.nim`（`StableBackend` / `OffsetStableBackend` / `VecStableBackend`）
+- [x] `storage/libs/ic_stable_backend.nim`（`IcStableBackend`）
+- [x] `storage/stable_backend.nim` facade
+- [x] `storage/libs/memory_manager.nim` を `MGR` 実装へ全面置換（`MemoryId` / strict create・open / validation / `VirtualStableBackend`）
+- [x] `storage/memory_manager.nim` facade
+- [x] `storage/libs/memory_view.nim` を backend + auto-grow 化（raw fixed offset 廃止）
+- [x] `IcStableTable` / `IcStableSeq` / `IcStableHashMap` を backend/view 必須 API へ
+- [x] `StableValue`（旧 `IcStableValue`）を `StableMemoryView` ベースへ
+- [x] `examples/stable_memory/backend/src/main.nim` を MemoryId ベースへ
+- [x] `README.md` / `docs/en/stable_memory.md` 更新
+- [x] tests: `test_stable_backend` / `test_memory_manager` / `test_memory_manager_structures`
+      + 既存 storage test を新 API へ追従
+- [x] canister integration test（`tests/storage/test_stable_memory.nim`）green（upgrade 含む）
+
+### Phase 0: ownership audit（完了）
+
+実機（PocketIC）で確認した結果:
+
+- `ic-wasi-polyfill` / `wasi2ic` をリンクした canister は、instantiate 時に
+  **stable memory を 1025 pages まで grow し、offset 0 に自身の `MGR` prefix を持つ**。
+- したがって application の `MemoryManager` は offset 1025 pages 以降に置く必要がある。
+- `MemoryManager` API に `IcReservedStablePages` と
+  `newIcOffsetBackend(raw)` を追加し、暗黙 contract ではなく明示的な
+  backend composition として扱う。
+- これにより `canister_init`（create）/ `canister_post_upgrade`（strict reopen）で
+  安定して動作し、upgrade 後も両構造が reopen できた。
+
+なお、この CDK は `canister_init` / `canister_post_upgrade` を自動 dispatch しないため、
+example では `{.exportwasm.}` で明示的に export し、その中で storage を open する。
+module-init（WASM instantiation 時）では stable memory に触れない。
+
+### 未対応（別リポジトリ / 環境依存）
+
+- [ ] `nim-ic-sqlite` の duplicate `backend.nim` / `ic_backend.nim` / `memory_manager.nim` 削除と
+      依存反転（別リポジトリのため本ブランチ対象外）
+- [ ] cross-library compatibility test（SQLite fixture 連携）

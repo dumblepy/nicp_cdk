@@ -103,9 +103,10 @@ proc initIcStableSeq*[T](memory: StableMemoryView): IcStableSeq[T] =
     result.dataEnd = result.dataStart
     result.writeHeader
 
-proc initIcStableSeq*[T](baseOffset: uint64 = 0): IcStableSeq[T] =
-  ## Compatibility overload for a raw stable-memory region.
-  initIcStableSeq[T](initRawMemoryView(baseOffset))
+proc initIcStableSeq*[T](backend: StableBackend): IcStableSeq[T] =
+  ## Convenience overload: a `StableBackend` (for example a virtual memory from
+  ## `MemoryManager.getMemory`) is adapted through `view()`.
+  initIcStableSeq[T](backend.view())
 
 proc len*[T](s: IcStableSeq[T]): int = int(s.length)
 

@@ -1,7 +1,13 @@
+## A single value stored in its own managed stable-memory region.
+##
+## The value and its header live at the base of a `StableMemoryView`, so a
+## `StableValue` is normally constructed from a `MemoryId` handle returned by
+## `MemoryManager.getMemory`. Direct physical offsets are no longer accepted.
+
 import std/endians
 
 import ./libs/serialization as stable_ser
-import ./libs/stable_memory
+import ./libs/memory_view
 import ../ic_types/ic_principal
 
 const
@@ -9,14 +15,16 @@ const
   ValueVersion = 1'u32
   ValueHeaderSize = 16'u64
 
-type IcStableValue*[T] = object
-  baseOffset: uint64
-  dataLen: uint64
+type
+  StableValue*[T] = object
+    memory: StableMemoryView
+    dataLen: uint64
+  IcStableValue*[T] = StableValue[T]
 
-proc dataStart[T](db: IcStableValue[T]): uint64 =
-  db.baseOffset + ValueHeaderSize
+proc dataStart[T](db: StableValue[T]): uint64 =
+  ValueHeaderSize
 
-proc writeHeader[T](db: IcStableValue[T]) =
+proc writeHeader[T](db: StableValue[T]) =
   var header = newSeq[byte](int(ValueHeaderSize))
   header[0] = ValueMagic[0]
   header[1] = ValueMagic[1]
@@ -28,12 +36,12 @@ proc writeHeader[T](db: IcStableValue[T]) =
   offset += 4
   var dataLen = db.dataLen
   littleEndian64(addr header[offset], addr dataLen)
-  stableWrite(db.baseOffset, header)
+  db.memory.write(0, header)
 
-proc readHeader[T](db: var IcStableValue[T]): bool =
-  if stableSizeBytes() < db.baseOffset + ValueHeaderSize:
+proc readHeader[T](db: var StableValue[T]): bool =
+  if db.memory.size < ValueHeaderSize:
     return false
-  let header = stableRead(db.baseOffset, ValueHeaderSize)
+  let header = db.memory.read(0, ValueHeaderSize)
   if header.len < int(ValueHeaderSize):
     return false
   if header[0] != ValueMagic[0] or header[1] != ValueMagic[1] or
@@ -42,41 +50,52 @@ proc readHeader[T](db: var IcStableValue[T]): bool =
   var offset = 4
   let version = stable_ser.deserialize[uint32](header, offset)
   if version != ValueVersion:
-    return false
+    raise newException(ValueError, "unsupported SVAL layout version")
   db.dataLen = stable_ser.deserialize[uint64](header, offset)
-  let maxData = stableSizeBytes() - dataStart(db)
-  if db.dataLen > maxData:
-    db.dataLen = maxData
+  let available = db.memory.size - ValueHeaderSize
+  if db.dataLen > available:
+    raise newException(ValueError, "invalid SVAL metadata")
   result = true
 
-proc initIcStableValue*[T](typ: typedesc[T], baseOffset: uint64 = 0): IcStableValue[T] =
+proc initStableValue*[T](memory: StableMemoryView): StableValue[T] =
   when not (T is SomeInteger or T is SomeFloat or T is bool or T is char or T is string or T is Principal or T is object):
-    {.fatal: "IcStableValue supports only basic types, Principal, or objects".}
-  result.baseOffset = baseOffset
+    {.fatal: "StableValue supports only basic types, Principal, or objects".}
+  result.memory = memory
   if not readHeader(result):
     result.dataLen = 0
     writeHeader(result)
 
-proc serialize*[T](db: IcStableValue[T], value: T): seq[byte] =
+proc initStableValue*[T](backend: StableBackend): StableValue[T] =
+  ## Convenience overload: a `StableBackend` (for example a virtual memory from
+  ## `MemoryManager.getMemory`) is adapted through `view()`.
+  initStableValue[T](backend.view())
+
+proc initIcStableValue*[T](memory: StableMemoryView): IcStableValue[T] =
+  initStableValue[T](memory)
+
+proc initIcStableValue*[T](backend: StableBackend): IcStableValue[T] =
+  initStableValue[T](backend)
+
+proc serialize*[T](db: StableValue[T], value: T): seq[byte] =
   discard db
   result = stable_ser.serialize(value)
 
-proc deserialize*[T](db: IcStableValue[T], data: seq[byte]): T =
+proc deserialize*[T](db: StableValue[T], data: seq[byte]): T =
   discard db
   var offset = 0
   result = stable_ser.deserialize[T](data, offset)
 
-proc set*[T](db: var IcStableValue[T], value: T) =
+proc set*[T](db: var StableValue[T], value: T) =
   let data = db.serialize(value)
-  stableWrite(dataStart(db), data)
+  db.memory.write(dataStart(db), data)
   db.dataLen = uint64(data.len)
   writeHeader(db)
 
-proc get*[T](db: IcStableValue[T]): T =
+proc get*[T](db: StableValue[T]): T =
   if db.dataLen == 0:
     raise newException(ValueError, "value not set")
-  let data = stableRead(dataStart(db), db.dataLen)
+  let data = db.memory.read(dataStart(db), db.dataLen)
   result = db.deserialize(data)
 
-proc hasValue*[T](db: IcStableValue[T]): bool =
+proc hasValue*[T](db: StableValue[T]): bool =
   db.dataLen > 0

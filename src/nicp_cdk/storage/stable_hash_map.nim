@@ -230,7 +230,7 @@ proc initialize[K, V](t: var IcStableHashMap[K, V]) =
   discard t.newBucket; discard t.newBucket
   t.writeHeader
 
-proc initIcStableHashMap*[K, V](memory: StableMemoryView = initRawMemoryView(),
+proc initIcStableHashMap*[K, V](memory: StableMemoryView,
                                 seed: StableHashSeed = DefaultStableHashSeed,
                                 maxBucketLoad: uint32 = DefaultBucketLoad,
                                 valueCodecId: uint32 = 0): IcStableHashMap[K, V] =
@@ -238,6 +238,14 @@ proc initIcStableHashMap*[K, V](memory: StableMemoryView = initRawMemoryView(),
   result.memory = memory; result.seed = seed; result.valueCodecId = valueCodecId; result.maxBucketLoad = maxBucketLoad
   if result.readHeader: return
   result.initialize
+
+proc initIcStableHashMap*[K, V](backend: StableBackend,
+                                seed: StableHashSeed = DefaultStableHashSeed,
+                                maxBucketLoad: uint32 = DefaultBucketLoad,
+                                valueCodecId: uint32 = 0): IcStableHashMap[K, V] =
+  ## Convenience overload: a `StableBackend` (for example a virtual memory from
+  ## `MemoryManager.getMemory`) is adapted through `view()`.
+  initIcStableHashMap[K, V](backend.view(), seed, maxBucketLoad, valueCodecId)
 
 proc len*[K, V](t: IcStableHashMap[K, V]): int = int(t.header.count)
 

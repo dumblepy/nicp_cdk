@@ -8,3 +8,4 @@
 - Internal reasoning compression. You may use internal reasoning, but do not output it. Keep internal reasoning minimal but sufficient for correctness. Do not over-explore edge cases unless explicitly asked. Return only the final answer in concise form.
 - git add, git commitのコマンド操作は禁止。
 - 常に日本語で回答する。
+- `/application/.agent/progress.mdc` を使って自律ループの中で最終ゴールまで継続して実装を進めること。

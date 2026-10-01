@@ -227,13 +227,19 @@ proc initIcStableTable*[K, V](memory: StableMemoryView, codec: StableKeyCodec[K]
     new(result.cache)
     result.cache.entries = newSeq[NodeCacheEntry](cacheSlots)
 
-proc initIcStableTable*[K, V](memory: StableMemoryView = initRawMemoryView(), cacheSlots: int = 16,
+proc initIcStableTable*[K, V](memory: StableMemoryView, cacheSlots: int = 16,
                               valueCodecId: uint32 = 0): IcStableTable[K, V] =
   let codec = StableKeyCodec[K](id: stableKeyCodecId(K),
     encode: proc(key: K): seq[byte] = stableKeyEncode(key),
     decode: proc(data: openArray[byte]): K = stableKeyDecode[K](data))
   result = initIcStableTable[K, V](memory, codec, cacheSlots, valueCodecId)
   result.builtinCodec = true
+
+proc initIcStableTable*[K, V](backend: StableBackend, cacheSlots: int = 16,
+                              valueCodecId: uint32 = 0): IcStableTable[K, V] =
+  ## Convenience overload: a `StableBackend` (for example a virtual memory from
+  ## `MemoryManager.getMemory`) is adapted through `view()`.
+  initIcStableTable[K, V](backend.view(), cacheSlots, valueCodecId)
 
 proc len*[K, V](t: IcStableTable[K, V]): int = int(t.header.count)
 proc hasKey*[K, V](t: IcStableTable[K, V], key: K): bool {.noinline.} =

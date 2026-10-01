@@ -1,6 +1,7 @@
 import ../../ic0/ic0
+import ./stable_backend
 
-const StablePageSize* = 65536'u64
+export stable_backend
 
 proc stableSizePages*(): uint64 =
   ic0_stable64_size()
